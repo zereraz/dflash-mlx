@@ -173,6 +173,15 @@ def _target_text_model(target_model: Any) -> Any:
     raise AttributeError(f"Unsupported target text model: {type(wrapper)!r}")
 
 
+def detect_target_family(target_model: Any) -> str:
+    inner = _target_text_model(target_model)
+    has_linear = any(
+        hasattr(layer, "linear_attn") or hasattr(layer, "is_linear")
+        for layer in inner.layers
+    )
+    return "hybrid_gdn" if has_linear else "pure_attention"
+
+
 def _target_embed_tokens(target_model: Any) -> Any:
     return _target_text_model(target_model).embed_tokens
 
@@ -882,6 +891,9 @@ def _install_target_speculative_hooks(target_model: Any) -> None:
     text_model = _target_text_model(target_model)
     if getattr(text_model, "_dflash_speculative_hooks_installed", False):
         return
+    if detect_target_family(target_model) == "pure_attention":
+        text_model._dflash_speculative_hooks_installed = True
+        return
     for layer in text_model.layers:
         if getattr(layer, "is_linear", False) and hasattr(layer, "linear_attn"):
             _install_exact_small_proj_hooks(layer.linear_attn)
@@ -898,6 +910,8 @@ def configure_full_attention_split(
     chunk_size: int = 8,
 ) -> None:
     text_model = _target_text_model(target_model)
+    if detect_target_family(target_model) == "pure_attention":
+        return
     _install_target_speculative_hooks(target_model)
     for layer in text_model.layers:
         if not getattr(layer, "is_linear", False) and hasattr(layer, "self_attn"):
@@ -947,16 +961,19 @@ def load_target_bundle(
 ):
     resolved_ref = resolve_model_ref(model_ref, kind="target")
     model, tokenizer, config = load(resolved_ref, lazy=lazy, return_config=True)
-    _install_target_speculative_hooks(model)
-    configure_full_attention_split(
-        model,
-        enabled=split_full_attention_sdpa and not quantize_kv_cache,
-        chunk_size=split_full_attention_chunk_size,
-    )
+    target_family = detect_target_family(model)
+    if target_family == "hybrid_gdn":
+        _install_target_speculative_hooks(model)
+        configure_full_attention_split(
+            model,
+            enabled=split_full_attention_sdpa and not quantize_kv_cache,
+            chunk_size=split_full_attention_chunk_size,
+        )
     meta = {
         "resolved_model_ref": resolved_ref,
         "config": config,
         "quantize_kv_cache": bool(quantize_kv_cache),
+        "target_family": target_family,
     }
     if pack_target_weights:
         meta["packing"] = pack_target_model_weights_selective(

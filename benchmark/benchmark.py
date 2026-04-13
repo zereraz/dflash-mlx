@@ -31,7 +31,12 @@ DEFAULT_REPEAT = 3
 
 
 def _git_hash_short() -> str:
-    return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except Exception:
+        return "unknown"
 
 
 def _hardware_info() -> dict[str, str]:
