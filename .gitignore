@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+codedb.snapshot
+.DS_Store
+.build-venv
+STATUS.md
+status_archive/
+.tmp/
+research/
+mlx/
+AGENTS.md
+CLAUDE.md
+benchmark/datasets/
