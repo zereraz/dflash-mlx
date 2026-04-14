@@ -164,7 +164,6 @@ def _build_single_case_report(
     *,
     prompt: str,
     max_new_tokens: int,
-    block_tokens: int,
     repeat: int,
     cooldown: int,
     runs: list[dict[str, Any]],
@@ -177,13 +176,18 @@ def _build_single_case_report(
     speedup_values = [float(run["generation_speedup_vs_baseline"]) for run in runs if run["generation_speedup_vs_baseline"] is not None]
     acceptance_ratio_values = [float(run["dflash"]["acceptance_ratio"]) for run in runs]
     prompt_tokens = int(runs[0]["baseline"]["prompt_token_count"]) if runs else 0
+    effective_block_tokens = (
+        int(runs[0]["dflash"].get("block_tokens"))
+        if runs and runs[0].get("dflash", {}).get("block_tokens") is not None
+        else None
+    )
     return {
         "hardware": _hardware_info(),
         "config": _build_config(
             prompt=prompt,
             prompt_tokens=prompt_tokens,
             max_new_tokens=max_new_tokens,
-            block_tokens=block_tokens,
+            block_tokens=effective_block_tokens,
             repeat=repeat,
             cooldown=cooldown,
             target_model=target_model,
@@ -426,7 +430,7 @@ def benchmark_once(
     *,
     prompt: str,
     max_new_tokens: int,
-    block_tokens: int,
+    block_tokens: int | None = None,
     verify_chunk_tokens: int | None,
     use_chat_template: bool,
     target_model_ref: str | None,
@@ -458,7 +462,6 @@ def benchmark_once(
     return _build_single_case_report(
         prompt=prompt,
         max_new_tokens=max_new_tokens,
-        block_tokens=block_tokens,
         repeat=1,
         cooldown=cooldown,
         runs=[result],
@@ -472,7 +475,7 @@ def benchmark_matrix(
     prompts: tuple[str, ...] = (),
     schedules: tuple[int, ...] = DEFAULT_SCHEDULES,
     repeat: int = DEFAULT_REPEAT,
-    block_tokens: int = 16,
+    block_tokens: int | None = None,
     verify_chunk_tokens: int | None = None,
     use_chat_template: bool = False,
     target_model_ref: str | None = None,
@@ -523,7 +526,6 @@ def benchmark_matrix(
     return _build_single_case_report(
         prompt=prompt,
         max_new_tokens=max_new_tokens,
-        block_tokens=block_tokens,
         repeat=repeat,
         cooldown=cooldown,
         runs=runs,

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dflash-mlx"
-version = "0.1.0"
+version = "0.1.1"
 description = "DFlash speculative decoding for Apple Silicon (MLX)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [{name = "bstnxbt"}]
 dependencies = [
     "mlx>=0.25.0",
-    "mlx-lm>=0.22.0",
+    "mlx-lm>=0.31.0",
 ]
 
 [project.urls]

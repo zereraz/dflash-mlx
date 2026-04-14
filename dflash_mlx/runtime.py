@@ -12,7 +12,6 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models import cache as cache_mod
 from mlx_lm.models import gated_delta as gated_delta_mod
-from mlx_lm.models.activations import swiglu
 from mlx_lm.models.base import (
     create_attention_mask,
     create_ssm_mask,
@@ -227,6 +226,16 @@ def _resolve_draft_window() -> tuple[int, int]:
     window = int(os.environ.get("DFLASH_DRAFT_WINDOW", "1024").strip())
     return max(0, sink), max(1, window)
 
+
+def _profile_dflash_cycles_enabled() -> bool:
+    raw = os.environ.get("DFLASH_PROFILE", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _ns_to_us(ns: int | float) -> float:
+    return float(ns) / 1_000.0
+
+
 def _should_quantize_draft(quantize_draft: bool = False) -> bool:
     if quantize_draft:
         return True
@@ -319,255 +328,6 @@ def _attention_has_gated_q_proj(attn: Any) -> bool:
     return int(q_proj_weight.shape[0]) == expected_out_dim
 
 
-def _concat_biases(*biases: Optional[mx.array]) -> Optional[mx.array]:
-    present = [bias for bias in biases if bias is not None]
-    if not present:
-        return None
-    if len(present) != len(biases):
-        raise ValueError("expected either all packed biases or none")
-    return mx.concatenate(present, axis=0)
-
-
-def _exact_match(lhs: mx.array, rhs: mx.array) -> bool:
-    mx.eval(lhs, rhs)
-    return bool(mx.all(mx.equal(lhs, rhs)).item())
-
-
-def _max_abs_diff(lhs: mx.array, rhs: mx.array) -> float:
-    delta = mx.abs(lhs.astype(mx.float32) - rhs.astype(mx.float32))
-    mx.eval(delta)
-    return float(mx.max(delta).item())
-
-
-def _assert_exact(label: str, lhs: mx.array, rhs: mx.array) -> None:
-    if _exact_match(lhs, rhs):
-        return
-    raise AssertionError(f"{label} mismatch (max_abs_diff={_max_abs_diff(lhs, rhs)})")
-
-
-def _set_linear_from_packed(
-    linear: Any,
-    packed_weight: mx.array,
-    start: int,
-    end: int,
-    packed_bias: Optional[mx.array],
-) -> None:
-    linear.weight = packed_weight[start:end]
-    if getattr(linear, "bias", None) is not None and packed_bias is not None:
-        linear.bias = packed_bias[start:end]
-
-
-def _install_packed_mlp_hook(mlp: Any) -> None:
-    cls = type(mlp)
-    if getattr(cls, "_dflash_packed_call_installed", False):
-        return
-
-    original_call = cls.__call__
-
-    def packed_call(self, x) -> mx.array:
-        packed_weight = getattr(self, "_dflash_gate_up_weight", None)
-        if packed_weight is None:
-            return original_call(self, x)
-        gate_up = _linear_forward(
-            x,
-            packed_weight,
-            getattr(self, "_dflash_gate_up_bias", None),
-        )
-        gate, up = mx.split(gate_up, [self._dflash_gate_proj_out_dim], axis=-1)
-        return self.down_proj(swiglu(gate, up))
-
-    cls.__call__ = packed_call
-    cls._dflash_packed_call_installed = True
-
-
-def _install_packed_attention_hook(attn: Any) -> None:
-    cls = type(attn)
-    if getattr(cls, "_dflash_packed_call_installed", False):
-        return
-
-    original_call = cls.__call__
-
-    def packed_call(
-        self,
-        x: mx.array,
-        mask: Optional[mx.array] = None,
-        cache: Optional[Any] = None,
-    ) -> mx.array:
-        packed_weight = getattr(self, "_dflash_qkv_weight", None)
-        if packed_weight is None:
-            return original_call(self, x, mask=mask, cache=cache)
-        if not _attention_has_gated_q_proj(self):
-            return original_call(self, x, mask=mask, cache=cache)
-
-        B, L, _ = x.shape
-        qkv = _linear_forward(x, packed_weight, getattr(self, "_dflash_qkv_bias", None))
-        q_proj_dim = self._dflash_q_proj_out_dim
-        k_proj_dim = self._dflash_k_proj_out_dim
-        q_proj_output, keys, values = mx.split(
-            qkv,
-            [q_proj_dim, q_proj_dim + k_proj_dim],
-            axis=-1,
-        )
-        num_attention_heads = _attention_num_heads(self)
-        num_key_value_heads = _attention_num_kv_heads(self)
-        queries, gate = mx.split(
-            q_proj_output.reshape(B, L, num_attention_heads, -1),
-            2,
-            axis=-1,
-        )
-        gate = gate.reshape(B, L, -1)
-
-        queries = self.q_norm(queries).transpose(0, 2, 1, 3)
-        keys = self.k_norm(keys.reshape(B, L, num_key_value_heads, -1)).transpose(
-            0, 2, 1, 3
-        )
-        values = values.reshape(B, L, num_key_value_heads, -1).transpose(
-            0, 2, 1, 3
-        )
-
-        if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
-            keys, values = cache.update_and_fetch(keys, values)
-        else:
-            queries = self.rope(queries)
-            keys = self.rope(keys)
-
-        output = scaled_dot_product_attention(
-            queries, keys, values, cache=cache, scale=self.scale, mask=mask
-        )
-        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(output * mx.sigmoid(gate))
-
-    cls.__call__ = packed_call
-    cls._dflash_packed_call_installed = True
-
-
-def _pack_qwen3next_mlp(mlp: Any, *, layer_index: int, validate: bool) -> dict[str, Any]:
-    if getattr(mlp, "_dflash_gate_up_weight", None) is not None:
-        return {"layer_index": layer_index, "packed": True, "validated": False}
-
-    gate_weight = mlp.gate_proj.weight
-    up_weight = mlp.up_proj.weight
-    gate_out_dim = int(gate_weight.shape[0])
-    gate_bias = getattr(mlp.gate_proj, "bias", None)
-    up_bias = getattr(mlp.up_proj, "bias", None)
-
-    x = mx.random.normal((2, 3, int(gate_weight.shape[1]))).astype(gate_weight.dtype)
-    if validate:
-        gate_old = mlp.gate_proj(x)
-        up_old = mlp.up_proj(x)
-        mlp_old = mlp(x)
-
-    packed_weight = mx.concatenate([gate_weight, up_weight], axis=0)
-    packed_bias = _concat_biases(gate_bias, up_bias)
-    if packed_bias is None:
-        mx.eval(packed_weight)
-    else:
-        mx.eval(packed_weight, packed_bias)
-
-    if validate:
-        gate_up = _linear_forward(x, packed_weight, packed_bias)
-        gate_new, up_new = mx.split(gate_up, [gate_out_dim], axis=-1)
-        _assert_exact(f"mlp[{layer_index}] gate_proj", gate_old, gate_new)
-        _assert_exact(f"mlp[{layer_index}] up_proj", up_old, up_new)
-
-    _install_packed_mlp_hook(mlp)
-    mlp._dflash_gate_up_weight = packed_weight
-    mlp._dflash_gate_up_bias = packed_bias
-    mlp._dflash_gate_proj_out_dim = gate_out_dim
-    _set_linear_from_packed(mlp.gate_proj, packed_weight, 0, gate_out_dim, packed_bias)
-    _set_linear_from_packed(
-        mlp.up_proj,
-        packed_weight,
-        gate_out_dim,
-        gate_out_dim + int(up_weight.shape[0]),
-        packed_bias,
-    )
-
-    if validate:
-        mlp_new = mlp(x)
-        _assert_exact(f"mlp[{layer_index}] full", mlp_old, mlp_new)
-
-    return {
-        "layer_index": layer_index,
-        "packed": True,
-        "validated": validate,
-        "gate_out_dim": gate_out_dim,
-        "up_out_dim": int(up_weight.shape[0]),
-    }
-
-
-def _pack_qwen3next_attention(attn: Any, *, layer_index: int, validate: bool) -> dict[str, Any]:
-    if getattr(attn, "_dflash_qkv_weight", None) is not None:
-        return {"layer_index": layer_index, "packed": True, "validated": False}
-
-    q_weight = attn.q_proj.weight
-    k_weight = attn.k_proj.weight
-    v_weight = attn.v_proj.weight
-    q_out_dim = int(q_weight.shape[0])
-    k_out_dim = int(k_weight.shape[0])
-    v_out_dim = int(v_weight.shape[0])
-    q_bias = getattr(attn.q_proj, "bias", None)
-    k_bias = getattr(attn.k_proj, "bias", None)
-    v_bias = getattr(attn.v_proj, "bias", None)
-
-    x = mx.random.normal((2, 4, int(q_weight.shape[1]))).astype(q_weight.dtype)
-    if validate:
-        q_old = attn.q_proj(x)
-        k_old = attn.k_proj(x)
-        v_old = attn.v_proj(x)
-        attn_old = attn(x)
-
-    packed_weight = mx.concatenate([q_weight, k_weight, v_weight], axis=0)
-    packed_bias = _concat_biases(q_bias, k_bias, v_bias)
-    if packed_bias is None:
-        mx.eval(packed_weight)
-    else:
-        mx.eval(packed_weight, packed_bias)
-
-    if validate:
-        qkv = _linear_forward(x, packed_weight, packed_bias)
-        q_new, k_new, v_new = mx.split(qkv, [q_out_dim, q_out_dim + k_out_dim], axis=-1)
-        _assert_exact(f"attn[{layer_index}] q_proj", q_old, q_new)
-        _assert_exact(f"attn[{layer_index}] k_proj", k_old, k_new)
-        _assert_exact(f"attn[{layer_index}] v_proj", v_old, v_new)
-
-    _install_packed_attention_hook(attn)
-    attn._dflash_qkv_weight = packed_weight
-    attn._dflash_qkv_bias = packed_bias
-    attn._dflash_q_proj_out_dim = q_out_dim
-    attn._dflash_k_proj_out_dim = k_out_dim
-    _set_linear_from_packed(attn.q_proj, packed_weight, 0, q_out_dim, packed_bias)
-    _set_linear_from_packed(
-        attn.k_proj,
-        packed_weight,
-        q_out_dim,
-        q_out_dim + k_out_dim,
-        packed_bias,
-    )
-    _set_linear_from_packed(
-        attn.v_proj,
-        packed_weight,
-        q_out_dim + k_out_dim,
-        q_out_dim + k_out_dim + v_out_dim,
-        packed_bias,
-    )
-
-    if validate:
-        attn_new = attn(x)
-        _assert_exact(f"attn[{layer_index}] full", attn_old, attn_new)
-
-    return {
-        "layer_index": layer_index,
-        "packed": True,
-        "validated": validate,
-        "q_out_dim": q_out_dim,
-        "k_out_dim": k_out_dim,
-        "v_out_dim": v_out_dim,
-    }
-
-
 def pack_target_model_weights(target_model: Any, *, validate: bool = True) -> dict[str, Any]:
     return pack_target_model_weights_selective(
         target_model,
@@ -596,19 +356,6 @@ def pack_target_model_weights_selective(
         "packed_mlp_layers": [],
         "packed_attention_layers": [],
     }
-    for layer_index, layer in enumerate(text_model.layers):
-        mlp = getattr(layer, "mlp", None)
-        if pack_mlp and type(mlp).__name__ == "Qwen3NextMLP":
-            pack_info["packed_mlp_layers"].append(
-                _pack_qwen3next_mlp(mlp, layer_index=layer_index, validate=validate)
-            )
-
-        attn = getattr(layer, "self_attn", None)
-        if pack_attention and type(attn).__name__ == "Qwen3NextAttention":
-            pack_info["packed_attention_layers"].append(
-                _pack_qwen3next_attention(attn, layer_index=layer_index, validate=validate)
-            )
-
     text_model._dflash_pack_info = pack_info
     return pack_info
 
@@ -632,9 +379,10 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
         from mlx.nn.layers.distributed import sum_gradients
 
         B, S, _ = inputs.shape
+        sharding_group = getattr(self, "sharding_group", None)
 
-        if self.sharding_group is not None:
-            inputs = sum_gradients(self.sharding_group)(inputs)
+        if sharding_group is not None:
+            inputs = sum_gradients(sharding_group)(inputs)
 
         qkv = self.in_proj_qkv(inputs)
         z_proj = self.in_proj_z(inputs)
@@ -717,8 +465,8 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
         out_flat = out.reshape(B, S, -1)
         out = self.out_proj(out_flat)
 
-        if self.sharding_group is not None:
-            out = mx.distributed.all_sum(out, group=self.sharding_group)
+        if sharding_group is not None:
+            out = mx.distributed.all_sum(out, group=sharding_group)
 
         return out
 
@@ -930,7 +678,7 @@ def make_target_cache(
 ) -> list[Any]:
     text_model = _target_text_model(target_model)
     caches: list[Any] = []
-    for layer in text_model.layers:
+    for layer_index, layer in enumerate(text_model.layers):
         if getattr(layer, "is_linear", False) and hasattr(layer, "linear_attn"):
             if enable_speculative_linear_cache:
                 _install_target_speculative_hooks(target_model)
@@ -1034,18 +782,20 @@ def target_forward_with_hidden_states(
         for layer_index, (layer, layer_cache) in enumerate(zip(inner.layers, cache, strict=True)):
             mask = ssm_mask if getattr(layer, "is_linear", False) else fa_mask
             h = layer(h, mask=mask, cache=layer_cache)
+            capture_key = layer_index + 1
             if capture_all:
                 captured.append(h)
-            elif (layer_index + 1) in capture_layer_ids:
-                captured[layer_index + 1] = h
+            elif capture_layer_ids is not None and capture_key in capture_layer_ids:
+                captured[capture_key] = h
     else:
         mask = create_attention_mask(hidden_states, cache[0])
         for layer_index, (layer, layer_cache) in enumerate(zip(inner.layers, cache, strict=True)):
             h = layer(h, mask, layer_cache)
+            capture_key = layer_index + 1
             if capture_all:
                 captured.append(h)
-            elif (layer_index + 1) in capture_layer_ids:
-                captured[layer_index + 1] = h
+            elif capture_layer_ids is not None and capture_key in capture_layer_ids:
+                captured[capture_key] = h
     normalized = inner.norm(h)
     logits = _lm_head_logits(target_model, normalized)
     return logits, captured
@@ -1108,6 +858,12 @@ def _restore_target_cache_after_acceptance(
             replay_start_ns = time.perf_counter_ns()
             cache_entry.rollback(acceptance_length)
             replay_ns_total += time.perf_counter_ns() - replay_start_ns
+        elif hasattr(cache_entry, "trim"):
+            offset = int(getattr(cache_entry, "offset", 0) or 0)
+            if offset > target_len:
+                replay_start_ns = time.perf_counter_ns()
+                cache_entry.trim(offset - target_len)
+                replay_ns_total += time.perf_counter_ns() - replay_start_ns
         elif hasattr(cache_entry, "offset"):
             offset = int(getattr(cache_entry, "offset", 0) or 0)
             if offset > target_len:
@@ -1332,7 +1088,7 @@ def generate_dflash_once(
     prompt: str,
     max_new_tokens: int,
     use_chat_template: bool = False,
-    block_tokens: int = 16,
+    block_tokens: Optional[int] = None,
     verify_chunk_tokens: Optional[int] = None,
     stop_token_ids: Optional[list[int]] = None,
     suppress_token_ids: Optional[list[int]] = None,
@@ -1431,7 +1187,9 @@ def generate_dflash_once(
         list(draft_model.target_layer_ids),
     )
 
-    effective_block_tokens = max(1, min(int(block_tokens or 1), int(draft_model.block_size)))
+    draft_block_size = int(draft_model.block_size)
+    requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
+    effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
     generated_token_buffer = mx.full((max_new_tokens,), draft_model.mask_token_id, dtype=mx.uint32)
     block_token_buffer = mx.full((effective_block_tokens,), draft_model.mask_token_id, dtype=mx.uint32)
     generated_token_count = 0
@@ -1448,12 +1206,26 @@ def generate_dflash_once(
     commit_ns_total = 0
     seen_draft_cycle = False
     acceptance_history: list[int] = []
+    profile_cycles = _profile_dflash_cycles_enabled()
+    cycle_profiles: list[dict[str, Any]] = []
+    profile_totals_ns = {
+        "draft": 0,
+        "verify": 0,
+        "acceptance": 0,
+        "hidden_extraction": 0,
+        "rollback": 0,
+        "other": 0,
+        "cycle_total": 0,
+    }
 
     while generated_token_count < max_new_tokens:
+        cycle_start_ns = time.perf_counter_ns()
         draft_cycle_ns = 0
         verify_cycle_ns = 0
         replay_cycle_ns = 0
         commit_cycle_ns = 0
+        acceptance_cycle_ns = 0
+        hidden_extract_cycle_ns = 0
         remaining = max_new_tokens - generated_token_count
         block_len = max(1, min(effective_block_tokens, remaining))
         block_token_buffer[:block_len] = draft_model.mask_token_id
@@ -1493,19 +1265,26 @@ def generate_dflash_once(
             verify_chunk_tokens=verify_chunk_tokens,
             capture_layer_ids=capture_layer_ids,
         )
+        if profile_cycles:
+            _eval_logits_and_captured(verify_logits, verify_hidden_states)
         verify_cycle_ns = time.perf_counter_ns() - verify_start_ns
         verify_ns_total += verify_cycle_ns
 
+        acceptance_start_ns = time.perf_counter_ns()
         posterior = greedy_tokens_with_mask(verify_logits[0], suppress_token_mask)
         acceptance_len = int(
             _match_acceptance_length(verify_token_ids[1:], posterior[:-1]).item()
         )
+        acceptance_cycle_ns = time.perf_counter_ns() - acceptance_start_ns
         acceptance_history.append(acceptance_len)
+
+        hidden_extract_start_ns = time.perf_counter_ns()
         committed_hidden = extract_context_feature_from_dict(
             verify_hidden_states,
             list(draft_model.target_layer_ids),
         )[:, : (1 + acceptance_len), :]
         mx.eval(committed_hidden, posterior)
+        hidden_extract_cycle_ns = time.perf_counter_ns() - hidden_extract_start_ns
 
         commit_count = 1 + acceptance_len
         committed_segment = verify_token_ids[:commit_count]
@@ -1543,6 +1322,39 @@ def generate_dflash_once(
 
         staged_first = posterior[acceptance_len : acceptance_len + 1]
 
+        if profile_cycles:
+            cycle_total_ns = time.perf_counter_ns() - cycle_start_ns
+            named_ns = (
+                draft_cycle_ns
+                + verify_cycle_ns
+                + acceptance_cycle_ns
+                + hidden_extract_cycle_ns
+                + replay_cycle_ns
+            )
+            other_cycle_ns = max(0, cycle_total_ns - named_ns)
+            cycle_profiles.append(
+                {
+                    "cycle": cycles_completed,
+                    "block_len": int(block_len),
+                    "commit_count": int(commit_count),
+                    "acceptance_len": int(acceptance_len),
+                    "draft_us": _ns_to_us(draft_cycle_ns),
+                    "verify_us": _ns_to_us(verify_cycle_ns),
+                    "acceptance_us": _ns_to_us(acceptance_cycle_ns),
+                    "hidden_extraction_us": _ns_to_us(hidden_extract_cycle_ns),
+                    "rollback_us": _ns_to_us(replay_cycle_ns),
+                    "other_us": _ns_to_us(other_cycle_ns),
+                    "cycle_total_us": _ns_to_us(cycle_total_ns),
+                }
+            )
+            profile_totals_ns["draft"] += draft_cycle_ns
+            profile_totals_ns["verify"] += verify_cycle_ns
+            profile_totals_ns["acceptance"] += acceptance_cycle_ns
+            profile_totals_ns["hidden_extraction"] += hidden_extract_cycle_ns
+            profile_totals_ns["rollback"] += replay_cycle_ns
+            profile_totals_ns["other"] += other_cycle_ns
+            profile_totals_ns["cycle_total"] += cycle_total_ns
+
     elapsed_us = (time.perf_counter_ns() - start_ns) / 1_000.0
     generated_token_ids = (
         generated_token_buffer[:generated_token_count].tolist()
@@ -1551,7 +1363,7 @@ def generate_dflash_once(
     )
     first_20 = acceptance_history[:20]
     last_20 = acceptance_history[-20:]
-    return {
+    result = {
         "elapsed_us": elapsed_us,
         "prompt_token_count": prompt_len,
         "generated_token_ids": generated_token_ids,
@@ -1560,6 +1372,7 @@ def generate_dflash_once(
         "acceptance_ratio": (
             accepted_from_draft / len(generated_token_ids) if generated_token_ids else 0.0
         ),
+        "block_tokens": effective_block_tokens,
         "cycles_completed": cycles_completed,
         "phase_timings_us": {
             "prefill": prefill_ns / 1_000.0,
@@ -1579,6 +1392,10 @@ def generate_dflash_once(
         "acceptance_last_20_avg": (sum(last_20) / len(last_20)) if last_20 else 0.0,
         "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
     }
+    if profile_cycles:
+        result["cycle_profile_us"] = cycle_profiles
+        result["cycle_profile_totals_us"] = {key: _ns_to_us(value) for key, value in profile_totals_ns.items()}
+    return result
 
 
 def stream_dflash_generate(
@@ -1589,7 +1406,7 @@ def stream_dflash_generate(
     prompt: str,
     max_new_tokens: int,
     use_chat_template: bool = False,
-    block_tokens: int = 16,
+    block_tokens: Optional[int] = None,
     stop_token_ids: Optional[list[int]] = None,
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
@@ -1668,7 +1485,9 @@ def stream_dflash_generate(
         "prompt_token_count": prompt_len,
     }
 
-    effective_block_tokens = max(1, min(int(block_tokens or 1), int(draft_model.block_size)))
+    draft_block_size = int(draft_model.block_size)
+    requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
+    effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
     block_token_buffer = mx.full((effective_block_tokens,), draft_model.mask_token_id, dtype=mx.uint32)
     generated_token_ids: list[int] = []
     accepted_from_draft = 0
@@ -1683,8 +1502,26 @@ def stream_dflash_generate(
     replay_ns_total = 0
     commit_ns_total = 0
     seen_draft_cycle = False
+    profile_cycles = _profile_dflash_cycles_enabled()
+    cycle_profiles: list[dict[str, Any]] = []
+    profile_totals_ns = {
+        "draft": 0,
+        "verify": 0,
+        "acceptance": 0,
+        "hidden_extraction": 0,
+        "rollback": 0,
+        "other": 0,
+        "cycle_total": 0,
+    }
 
     while len(generated_token_ids) < max_new_tokens:
+        cycle_start_ns = time.perf_counter_ns()
+        draft_cycle_ns = 0
+        verify_cycle_ns = 0
+        replay_cycle_ns = 0
+        commit_cycle_ns = 0
+        acceptance_cycle_ns = 0
+        hidden_extract_cycle_ns = 0
         remaining = max_new_tokens - len(generated_token_ids)
         block_len = max(1, min(effective_block_tokens, remaining))
         block_token_buffer[:block_len] = draft_model.mask_token_id
@@ -1700,7 +1537,6 @@ def stream_dflash_generate(
                 cache=draft_cache,
             )
             draft_logits = _lm_head_logits(target_model, draft_hidden[:, 1:, :])
-
             mx.async_eval(draft_logits)
             mx.eval(draft_logits)
             drafted = greedy_tokens_with_mask(draft_logits, suppress_token_mask).squeeze(0)
@@ -1724,31 +1560,41 @@ def stream_dflash_generate(
             verify_chunk_tokens=None,
             capture_layer_ids=capture_layer_ids,
         )
-        verify_ns_total += time.perf_counter_ns() - verify_start_ns
+        if profile_cycles:
+            _eval_logits_and_captured(verify_logits, verify_hidden_states)
+        verify_cycle_ns = time.perf_counter_ns() - verify_start_ns
+        verify_ns_total += verify_cycle_ns
 
+        acceptance_start_ns = time.perf_counter_ns()
         posterior = greedy_tokens_with_mask(verify_logits[0], suppress_token_mask)
         acceptance_len = int(
             _match_acceptance_length(verify_token_ids[1:], posterior[:-1]).item()
         )
+        acceptance_cycle_ns = time.perf_counter_ns() - acceptance_start_ns
+        hidden_extract_start_ns = time.perf_counter_ns()
         committed_hidden = extract_context_feature_from_dict(
             verify_hidden_states,
             list(draft_model.target_layer_ids),
         )[:, : (1 + acceptance_len), :]
         mx.eval(committed_hidden, posterior)
+        hidden_extract_cycle_ns = time.perf_counter_ns() - hidden_extract_start_ns
 
         commit_count = 1 + acceptance_len
         committed_segment = verify_token_ids[:commit_count]
         commit_start_ns = time.perf_counter_ns()
         start += commit_count
         target_hidden = committed_hidden
-        replay_ns_total += _restore_target_cache_after_acceptance(
+        replay_cycle_ns = _restore_target_cache_after_acceptance(
             target_cache,
             target_len=start,
             acceptance_length=acceptance_len,
             drafted_tokens=block_len - 1,
         )
+        replay_ns_total += replay_cycle_ns
         cycles_completed += 1
-        commit_ns_total += time.perf_counter_ns() - commit_start_ns
+        commit_wall_ns = time.perf_counter_ns() - commit_start_ns
+        commit_ns_total += commit_wall_ns
+        commit_cycle_ns = max(0, commit_wall_ns - replay_cycle_ns)
 
         accepted_from_draft += acceptance_len
         committed_ids = [int(token_id) for token_id in committed_segment.tolist()]
@@ -1781,8 +1627,41 @@ def stream_dflash_generate(
 
         staged_first = posterior[acceptance_len : acceptance_len + 1]
 
+        if profile_cycles:
+            cycle_total_ns = time.perf_counter_ns() - cycle_start_ns
+            named_ns = (
+                draft_cycle_ns
+                + verify_cycle_ns
+                + acceptance_cycle_ns
+                + hidden_extract_cycle_ns
+                + replay_cycle_ns
+            )
+            other_cycle_ns = max(0, cycle_total_ns - named_ns)
+            cycle_profiles.append(
+                {
+                    "cycle": cycles_completed,
+                    "block_len": int(block_len),
+                    "commit_count": int(commit_count),
+                    "acceptance_len": int(acceptance_len),
+                    "draft_us": _ns_to_us(draft_cycle_ns),
+                    "verify_us": _ns_to_us(verify_cycle_ns),
+                    "acceptance_us": _ns_to_us(acceptance_cycle_ns),
+                    "hidden_extraction_us": _ns_to_us(hidden_extract_cycle_ns),
+                    "rollback_us": _ns_to_us(replay_cycle_ns),
+                    "other_us": _ns_to_us(other_cycle_ns),
+                    "cycle_total_us": _ns_to_us(cycle_total_ns),
+                }
+            )
+            profile_totals_ns["draft"] += draft_cycle_ns
+            profile_totals_ns["verify"] += verify_cycle_ns
+            profile_totals_ns["acceptance"] += acceptance_cycle_ns
+            profile_totals_ns["hidden_extraction"] += hidden_extract_cycle_ns
+            profile_totals_ns["rollback"] += replay_cycle_ns
+            profile_totals_ns["other"] += other_cycle_ns
+            profile_totals_ns["cycle_total"] += cycle_total_ns
+
     elapsed_us = (time.perf_counter_ns() - start_ns) / 1_000.0
-    yield {
+    summary = {
         "event": "summary",
         "elapsed_us": elapsed_us,
         "prompt_token_count": prompt_len,
@@ -1792,6 +1671,7 @@ def stream_dflash_generate(
         "acceptance_ratio": (
             accepted_from_draft / len(generated_token_ids) if generated_token_ids else 0.0
         ),
+        "block_tokens": effective_block_tokens,
         "cycles_completed": cycles_completed,
         "phase_timings_us": {
             "prefill": prefill_ns / 1_000.0,
@@ -1804,3 +1684,9 @@ def stream_dflash_generate(
         },
         "verify_len_cap": int(verify_len_cap),
     }
+    if profile_cycles:
+        summary["cycle_profile_us"] = cycle_profiles
+        summary["cycle_profile_totals_us"] = {
+            key: _ns_to_us(value) for key, value in profile_totals_ns.items()
+        }
+    yield summary

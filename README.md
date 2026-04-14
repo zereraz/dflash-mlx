@@ -66,6 +66,8 @@ pip install dflash-mlx
 pipx install dflash-mlx
 ```
 
+`dflash-serve` wraps `mlx_lm.server` for full OpenAI-compatible serving semantics, including tools, reasoning, and streaming, while using the DFlash runtime as the generation engine.
+
 ## Quick start
 
 ```bash
@@ -80,6 +82,15 @@ dflash --model Qwen/Qwen3.5-9B --draft z-lab/Qwen3.5-9B-DFlash --prompt "$PROMPT
 # Server
 dflash-serve --model Qwen/Qwen3.5-9B --port 8000
 
+# Disable visible thinking/reasoning on models that support it
+dflash-serve --model Qwen/Qwen3.5-9B --port 8000 \
+  --chat-template-args '{"enable_thinking": false}'
+
+# Raise the DFlash fallback threshold for longer prompts
+dflash-serve --model mlx-community/Qwen3.5-35B-A3B-4bit --port 8000 \
+  --chat-template-args '{"enable_thinking": false}' \
+  --dflash-max-ctx 16384
+
 # Benchmark
 dflash-benchmark --model Qwen/Qwen3.5-9B --draft z-lab/Qwen3.5-9B-DFlash \
   --prompt "$PROMPT" --max-tokens 1024 --repeat 3 --no-eos
@@ -90,8 +101,9 @@ PYTHONPATH=. python3 -m examples.demo --mode dflash \
   --prompt "$PROMPT" --max-tokens 2048 --no-eos
 ```
 
-- Compatible with Open WebUI, Continue, and other OpenAI-compatible clients
+- Compatible with Open WebUI, Continue, OpenCode, aider, and other OpenAI-compatible clients
 - Streaming SSE support
+- `dflash-serve` requires a supported DFlash draft model (auto-detected from the registry or passed explicitly with `--draft`)
 
 ## Tested models
 
@@ -106,7 +118,7 @@ Optimized for Qwen3.5 models (hybrid GatedDeltaNet + attention architecture). Qw
 | [mlx-community/Qwen3.5-27B-4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | [z-lab/Qwen3.5-27B-DFlash](https://huggingface.co/z-lab/Qwen3.5-27B-DFlash) |
 | [mlx-community/Qwen3.5-35B-A3B-4bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-4bit) | [z-lab/Qwen3.5-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash) |
 
-Models without a draft in the registry automatically fall back to standard autoregressive generation.
+Models without a matching DFlash draft are rejected. Pass `--draft` explicitly if you want to override the registry.
 
 ## Features
 

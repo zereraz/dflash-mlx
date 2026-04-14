@@ -9,24 +9,32 @@ import sys
 from typing import Any, Optional
 
 from dflash_mlx.runtime import (
-    generate_baseline_once,
-    generate_dflash_once,
     load_draft_bundle,
     load_target_bundle,
-    stream_baseline_generate,
     stream_dflash_generate,
 )
 
 
 DRAFT_REGISTRY = {
-    "Qwen/Qwen3.5-4B": "z-lab/Qwen3.5-4B-DFlash",
-    "Qwen/Qwen3.5-9B": "z-lab/Qwen3.5-9B-DFlash",
-    "Qwen/Qwen3.5-27B": "z-lab/Qwen3.5-27B-DFlash",
-    "mlx-community/Qwen3.5-27B-8bit": "z-lab/Qwen3.5-27B-DFlash",
-    "mlx-community/Qwen3.5-27B-4bit": "z-lab/Qwen3.5-27B-DFlash",
-    "Qwen/Qwen3.5-35B-A3B": "z-lab/Qwen3.5-35B-A3B-DFlash",
-    "mlx-community/Qwen3.5-35B-A3B-4bit": "z-lab/Qwen3.5-35B-A3B-DFlash",
+    "Qwen3.5-4B": "z-lab/Qwen3.5-4B-DFlash",
+    "Qwen3.5-9B": "z-lab/Qwen3.5-9B-DFlash",
+    "Qwen3.5-27B": "z-lab/Qwen3.5-27B-DFlash",
+    "Qwen3.5-35B-A3B": "z-lab/Qwen3.5-35B-A3B-DFlash",
+    "Qwen3-4B": "z-lab/Qwen3-4B-DFlash-b16",
+    "Qwen3-8B": "z-lab/Qwen3-8B-DFlash-b16",
 }
+
+_NORMALIZED_DRAFT_REGISTRY = {
+    key.lower(): value for key, value in DRAFT_REGISTRY.items()
+}
+
+
+def _supported_base_models() -> str:
+    return ", ".join(DRAFT_REGISTRY.keys())
+
+
+def _strip_model_org(model_ref: str) -> str:
+    return str(model_ref).rsplit("/", 1)[-1].strip()
 
 
 def get_stop_token_ids(tokenizer: Any) -> list[int]:
@@ -40,7 +48,26 @@ def get_stop_token_ids(tokenizer: Any) -> list[int]:
 def resolve_optional_draft_ref(model_ref: str, draft_ref: Optional[str]) -> Optional[str]:
     if draft_ref:
         return draft_ref
-    return DRAFT_REGISTRY.get(model_ref)
+
+    stripped_name = _strip_model_org(model_ref)
+    lowered_name = stripped_name.lower()
+
+    exact = _NORMALIZED_DRAFT_REGISTRY.get(lowered_name)
+    if exact is not None:
+        return exact
+
+    matching_bases = [
+        base_name
+        for base_name in _NORMALIZED_DRAFT_REGISTRY
+        if lowered_name == base_name
+        or lowered_name.startswith(base_name + "-")
+        or lowered_name.startswith(base_name + "_")
+    ]
+    if not matching_bases:
+        return None
+
+    best_match = max(matching_bases, key=len)
+    return _NORMALIZED_DRAFT_REGISTRY[best_match]
 
 
 def decode_token(tokenizer: Any, token_id: int) -> str:
@@ -64,14 +91,20 @@ def load_runtime_components(
     model_ref: str,
     draft_ref: Optional[str],
 ):
-    target_model, tokenizer, _ = load_target_bundle(model_ref, lazy=True)
     resolved_draft_ref = resolve_optional_draft_ref(model_ref, draft_ref)
     if not resolved_draft_ref:
-        return target_model, tokenizer, None, None
+        raise ValueError(
+            f"No DFlash draft model found for '{model_ref}'.\n"
+            f"Use --draft to specify one, or check https://huggingface.co/z-lab for available drafts.\n"
+            f"Supported base models: {_supported_base_models()}"
+        )
+    target_model, tokenizer, _ = load_target_bundle(model_ref, lazy=True)
     try:
         draft_model, _ = load_draft_bundle(resolved_draft_ref, lazy=True)
-    except Exception:
-        return target_model, tokenizer, None, None
+    except Exception as exc:
+        raise ValueError(
+            f"Failed to load DFlash draft model '{resolved_draft_ref}' for '{model_ref}'."
+        ) from exc
     return target_model, tokenizer, draft_model, resolved_draft_ref
 
 
@@ -88,25 +121,15 @@ def run_generate(
         draft_ref=draft_ref,
     )
     stop_token_ids = get_stop_token_ids(tokenizer)
-    if draft_model is None:
-        stream = stream_baseline_generate(
-            target_model=target_model,
-            tokenizer=tokenizer,
-            prompt=prompt,
-            max_new_tokens=max_tokens,
-            use_chat_template=use_chat_template,
-            stop_token_ids=stop_token_ids,
-        )
-    else:
-        stream = stream_dflash_generate(
-            target_model=target_model,
-            tokenizer=tokenizer,
-            draft_model=draft_model,
-            prompt=prompt,
-            max_new_tokens=max_tokens,
-            use_chat_template=use_chat_template,
-            stop_token_ids=stop_token_ids,
-        )
+    stream = stream_dflash_generate(
+        target_model=target_model,
+        tokenizer=tokenizer,
+        draft_model=draft_model,
+        prompt=prompt,
+        max_new_tokens=max_tokens,
+        use_chat_template=use_chat_template,
+        stop_token_ids=stop_token_ids,
+    )
 
     summary: Optional[dict[str, Any]] = None
     for event in stream:
