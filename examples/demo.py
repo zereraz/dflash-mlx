@@ -14,6 +14,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Optional
 
+import mlx.core as mx
 from mlx_lm.utils import load as load_pristine_target
 
 from dflash_mlx.runtime import (
@@ -518,6 +519,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    if mx.metal.is_available():
+        wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_cache_limit(wired_limit // 4)
     args = parse_args()
     use_chat_template = not args.no_chat_template
     _print_header(args.mode)

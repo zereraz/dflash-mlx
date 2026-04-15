@@ -8,6 +8,7 @@ import argparse
 import sys
 from typing import Any, Optional
 
+import mlx.core as mx
 from dflash_mlx.runtime import (
     load_draft_bundle,
     load_target_bundle,
@@ -153,6 +154,9 @@ def run_generate(
 
 
 def main() -> None:
+    if mx.metal.is_available():
+        wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_cache_limit(wired_limit // 4)
     parser = argparse.ArgumentParser(description="Generate text with DFlash on MLX.")
     parser.add_argument("--model", required=True, help="Target model reference.")
     parser.add_argument("--prompt", required=True, help="Prompt to generate from.")
