@@ -28,32 +28,41 @@ https://github.com/user-attachments/assets/a9be2b48-3264-4970-b836-c876b0b7fdda
 
 - **Tape-replay rollback**: instead of snapshotting and restoring the full GatedDeltaNet state, dflash-mlx records an innovation tape during verify and replays only the accepted steps through a custom Metal kernel. Keeps rollback cost low and preserves acceptance over long generations.
 - **JIT SDPA 2-pass**: long-context verify (`N >= 1024`) uses a custom Metal attention kernel that stays numerically aligned with stock MLX attention.
+- **Verify-specialized int4 qmm** (`verify_qmm`): custom Metal simdgroup-MMA kernel for the M=16 quantized matmul that dominates the target verify step. Two shape-adaptive variants (`mma2big`, `mma2big_pipe` with K-split + double-buffered staging). Auto-enabled on MoE targets and dense models with ≥40 layers where the M=16 specialization amortizes over enough layers to beat stock `mx.quantized_matmul` end-to-end. Opt-in override via `DFLASH_VERIFY_LINEAR={0,1}`.
 - **Numerical coherence**: bf16-sensitive paths, including recurrent state replay and small projections, are stabilized across speculative cycles so accepted tokens stay consistent.
 
 ## Benchmarks
 
 | Model | Tokens | Baseline | DFlash | Speedup | Acceptance |
 |-------|--------|----------|--------|---------|------------|
-| Qwen3.5-4B | 1024 | 53.48 tok/s | 197.49 tok/s | 3.69x | 88.67% |
-| Qwen3.5-4B | 2048 | 53.74 tok/s | 219.83 tok/s | 4.10x | 89.26% |
-| Qwen3.5-4B | 4096 | 53.58 tok/s | 155.19 tok/s | 2.83x | 87.55% |
-| Qwen3.5-9B | 1024 | 31.09 tok/s | 127.47 tok/s | 4.10x | 88.96% |
-| Qwen3.5-9B | 2048 | 30.96 tok/s | 127.07 tok/s | 4.13x | 89.36% |
-| Qwen3.5-9B | 4096 | 31.58 tok/s | 103.90 tok/s | 3.29x | 88.57% |
-| Qwen3.5-27B-4bit | 1024 | 33.24 tok/s | 65.80 tok/s | 1.98x | 89.45% |
-| Qwen3.5-27B-4bit | 2048 | 32.35 tok/s | 62.78 tok/s | 1.90x | 89.11% |
-| Qwen3.5-27B-4bit | 4096 | 29.38 tok/s | 48.89 tok/s | 1.66x | 87.99% |
-| Qwen3.5-35B-A3B-4bit | 1024 | 139.97 tok/s | 242.92 tok/s | 1.74x | 89.26% |
-| Qwen3.5-35B-A3B-4bit | 2048 | 142.12 tok/s | 240.21 tok/s | 1.69x | 88.67% |
-| Qwen3.5-35B-A3B-4bit | 4096 | 140.73 tok/s | 189.62 tok/s | 1.35x | 86.96% |
+| Qwen3.5-4B | 1024 | 53.80 tok/s | 182.87 tok/s | 3.40x | 86.43% |
+| Qwen3.5-4B | 2048 | 53.90 tok/s | 188.70 tok/s | 3.49x | 87.70% |
+| Qwen3.5-4B | 4096 | 53.49 tok/s | 195.84 tok/s | 3.66x | 88.35% |
+| Qwen3.5-4B | 8192 | 53.28 tok/s | 160.51 tok/s | 3.02x | 87.30% |
+| Qwen3.5-9B | 1024 | 30.95 tok/s | 135.34 tok/s | 4.37x | 89.55% |
+| Qwen3.5-9B | 2048 | 30.70 tok/s | 113.00 tok/s | 3.65x | 89.16% |
+| Qwen3.5-9B | 4096 | 30.56 tok/s | 94.59 tok/s | 3.06x | 88.31% |
+| Qwen3.5-9B | 8192 | 29.43 tok/s | 66.94 tok/s | 2.22x | 86.67% |
+| Qwen3.5-27B-4bit | 1024 | 33.55 tok/s | 79.02 tok/s | 2.37x | 90.04% |
+| Qwen3.5-27B-4bit | 2048 | 33.10 tok/s | 70.21 tok/s | 2.12x | 89.60% |
+| Qwen3.5-27B-4bit | 4096 | 31.47 tok/s | 55.68 tok/s | 1.77x | 88.38% |
+| Qwen3.5-27B-4bit | 8192 | 33.88 tok/s | 45.29 tok/s | 1.34x | 85.97% |
+| Qwen3.5-35B-A3B-4bit | 1024 | 143.03 tok/s | 248.85 tok/s | 1.76x | 89.26% |
+| Qwen3.5-35B-A3B-4bit | 2048 | 141.43 tok/s | 255.01 tok/s | 1.81x | 89.75% |
+| Qwen3.5-35B-A3B-4bit | 4096 | 141.49 tok/s | 216.47 tok/s | 1.53x | 88.50% |
+| Qwen3.5-35B-A3B-4bit | 8192 | 138.59 tok/s | 170.39 tok/s | 1.22x | 86.41% |
+| Qwen3.6-35B-A3B-4bit | 1024 | 138.26 tok/s | 300.33 tok/s | 2.20x | 91.02% |
+| Qwen3.6-35B-A3B-4bit | 2048 | 139.03 tok/s | 252.93 tok/s | 1.82x | 89.60% |
+| Qwen3.6-35B-A3B-4bit | 4096 | 134.50 tok/s | 208.40 tok/s | 1.56x | 88.43% |
+| Qwen3.6-35B-A3B-4bit | 8192 | 133.20 tok/s | 177.45 tok/s | 1.33x | 87.01% |
 
 ### Methodology
 
 Hardware: Apple M5 Max, 64GB unified memory. MLX 0.31.1 from the stock pip install.
 
-Protocol: stock `mlx_lm.stream_generate` on a pristine target model vs stock MLX plus the local DFlash runtime, measured sequentially. `3` repeats, median reported, `10s` cooldown between measured runs.
+Protocol: stock `mlx_lm.stream_generate` on a pristine target model vs stock MLX plus the local DFlash runtime, measured sequentially. `3` repeats, median reported, `60s` cooldown between measured runs.
 
-Generation: prompt `"The function $f$ satisfies the functional equation \[ f(x) + f(y) = f(x + y) - xy - 1 \] for all real numbers $x$ and $y$. If $f(1) = 1$, then find all integers $n$ such that $f(n) = n$. Enter all such integers, separated by commas. Please reason step by step, and put your final answer within \boxed{}."` with chat templates enabled by default, `--no-eos`, and post-prefill tok/s as the primary metric.
+Generation: prompt `"The function $f$ satisfies the functional equation \[ f(x) + f(y) = f(x + y) - xy - 1 \] for all real numbers $x$ and $y$. If $f(1) = 1$, then find all integers $n$ such that $f(n) = n$. Enter all such integers, separated by commas. Please reason step by step, and put your final answer within \boxed{}."` with chat templates enabled by default and post-prefill tok/s as the primary metric.
 
 Full per-run JSON reports are available in [`benchmark/results/`](benchmark/results/).
 
@@ -93,12 +102,12 @@ dflash-serve --model mlx-community/Qwen3.5-35B-A3B-4bit --port 8000 \
 
 # Benchmark
 dflash-benchmark --model Qwen/Qwen3.5-9B --draft z-lab/Qwen3.5-9B-DFlash \
-  --prompt "$PROMPT" --max-tokens 1024 --repeat 3 --no-eos
+  --prompt "$PROMPT" --max-tokens 1024 --repeat 3
 
 # Live demo — baseline vs DFlash side-by-side
 PYTHONPATH=. python3 -m examples.demo --mode dflash \
   --target-model Qwen/Qwen3.5-9B --draft-model z-lab/Qwen3.5-9B-DFlash \
-  --prompt "$PROMPT" --max-tokens 2048 --no-eos
+  --prompt "$PROMPT" --max-tokens 2048
 ```
 
 - Compatible with Open WebUI, Continue, OpenCode, aider, and other OpenAI-compatible clients
@@ -109,7 +118,7 @@ PYTHONPATH=. python3 -m examples.demo --mode dflash \
 
 Any model with a DFlash draft on HuggingFace should work.
 
-Optimized for Qwen3.5 models (hybrid GatedDeltaNet + attention architecture). Qwen3 (pure attention) models work, but without the precision benefits of tape-replay rollback.
+Optimized for Qwen3.5 / Qwen3.6 models (hybrid GatedDeltaNet + attention architecture). Qwen3 (pure attention) models work, but without the precision benefits of tape-replay rollback.
 
 | Target | Draft |
 |--------|-------|
@@ -117,6 +126,7 @@ Optimized for Qwen3.5 models (hybrid GatedDeltaNet + attention architecture). Qw
 | [Qwen/Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B) | [z-lab/Qwen3.5-9B-DFlash](https://huggingface.co/z-lab/Qwen3.5-9B-DFlash) |
 | [mlx-community/Qwen3.5-27B-4bit](https://huggingface.co/mlx-community/Qwen3.5-27B-4bit) | [z-lab/Qwen3.5-27B-DFlash](https://huggingface.co/z-lab/Qwen3.5-27B-DFlash) |
 | [mlx-community/Qwen3.5-35B-A3B-4bit](https://huggingface.co/mlx-community/Qwen3.5-35B-A3B-4bit) | [z-lab/Qwen3.5-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.5-35B-A3B-DFlash) |
+| [mlx-community/Qwen3.6-35B-A3B-4bit](https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit) | [z-lab/Qwen3.6-35B-A3B-DFlash](https://huggingface.co/z-lab/Qwen3.6-35B-A3B-DFlash) |
 
 Models without a matching DFlash draft are rejected. Pass `--draft` explicitly if you want to override the registry.
 
@@ -126,6 +136,7 @@ Models without a matching DFlash draft are rejected. Pass `--draft` explicitly i
 - **Streaming** — token-by-token output in the CLI and server
 - **Chat templates** — enabled by default
 - **Recurrent rollback** — `RecurrentRollbackCache` keeps GatedDeltaNet state coherent across speculative verify and rollback
+- **Verify-specialized int4 qmm kernel** — custom M=16 Metal kernel auto-enabled on MoE and dense ≥40-layer targets; falls back to stock `mx.quantized_matmul` everywhere else
 
 ## Roadmap
 

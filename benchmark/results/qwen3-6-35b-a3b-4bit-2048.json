@@ -6,8 +6,8 @@
     "python": "3.13.5"
   },
   "config": {
-    "target_model": "mlx-community/Qwen3.5-27B-4bit",
-    "draft_model": "z-lab/Qwen3.5-27B-DFlash",
+    "target_model": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "draft_model": "z-lab/Qwen3.6-35B-A3B-DFlash",
     "max_new_tokens": 2048,
     "block_tokens": 16,
     "cooldown": 60,
@@ -22,69 +22,69 @@
       "run": 1,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 457.68870803294703,
-        "generation_tps": 32.57303710449623,
-        "peak_memory_gb": 15.501623009
+        "ttft_ms": 676.2146249529906,
+        "generation_tps": 139.30993354969021,
+        "peak_memory_gb": 19.646811988
       },
       "dflash": {
-        "ttft_ms": 400.915125,
-        "generation_tps": 68.50193407949267,
+        "ttft_ms": 469.05025,
+        "generation_tps": 252.92703635127958,
         "tokens_per_cycle": 9.615023474178404,
         "cycles": 213,
         "acceptance_ratio": 0.89599609375,
-        "acceptance_first_20_avg": 6.6,
-        "acceptance_last_20_avg": 7.45,
-        "peak_memory_gb": 19.294476808
+        "acceptance_first_20_avg": 8.6,
+        "acceptance_last_20_avg": 3.85,
+        "peak_memory_gb": 20.792658052
       },
-      "speedup": 2.1030256975956654
+      "speedup": 1.8155707199520232
     },
     {
       "run": 2,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 433.60158399445936,
-        "generation_tps": 33.15970091255764,
-        "peak_memory_gb": 15.501625707
+        "ttft_ms": 634.1632499825209,
+        "generation_tps": 136.5478965396763,
+        "peak_memory_gb": 19.647362744
       },
       "dflash": {
-        "ttft_ms": 402.730458,
-        "generation_tps": 70.35555242684048,
+        "ttft_ms": 472.805667,
+        "generation_tps": 250.56172497798408,
         "tokens_per_cycle": 9.615023474178404,
         "cycles": 213,
         "acceptance_ratio": 0.89599609375,
-        "acceptance_first_20_avg": 6.6,
-        "acceptance_last_20_avg": 7.45,
-        "peak_memory_gb": 19.294519392
+        "acceptance_first_20_avg": 8.6,
+        "acceptance_last_20_avg": 3.85,
+        "peak_memory_gb": 20.792603972
       },
-      "speedup": 2.12171854662889
+      "speedup": 1.8349731583391997
     },
     {
       "run": 3,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 436.85512500815094,
-        "generation_tps": 33.101360981439,
-        "peak_memory_gb": 15.501635141
+        "ttft_ms": 721.8449160573073,
+        "generation_tps": 139.03140284682758,
+        "peak_memory_gb": 19.64735991
       },
       "dflash": {
-        "ttft_ms": 408.217125,
-        "generation_tps": 70.206679161409,
+        "ttft_ms": 470.08883299999997,
+        "generation_tps": 253.1921635337109,
         "tokens_per_cycle": 9.615023474178404,
         "cycles": 213,
         "acceptance_ratio": 0.89599609375,
-        "acceptance_first_20_avg": 6.6,
-        "acceptance_last_20_avg": 7.45,
-        "peak_memory_gb": 19.294488712
+        "acceptance_first_20_avg": 8.6,
+        "acceptance_last_20_avg": 3.85,
+        "peak_memory_gb": 20.792631068
       },
-      "speedup": 2.1209605007110173
+      "speedup": 1.8211149305071421
     }
   ],
   "summary": {
-    "baseline_tps_median": 33.101360981439,
-    "dflash_tps_median": 70.206679161409,
-    "dflash_tps_min": 68.50193407949267,
-    "dflash_tps_max": 70.35555242684048,
-    "speedup_median": 2.1209605007110173,
+    "baseline_tps_median": 139.03140284682758,
+    "dflash_tps_median": 252.92703635127958,
+    "dflash_tps_min": 250.56172497798408,
+    "dflash_tps_max": 253.1921635337109,
+    "speedup_median": 1.8211149305071421,
     "acceptance_ratio_median": 0.89599609375
   }
 }

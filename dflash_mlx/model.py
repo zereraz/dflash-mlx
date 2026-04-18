@@ -12,7 +12,6 @@ from mlx_lm.models.base import scaled_dot_product_attention
 from mlx_lm.models.qwen3 import MLP
 from mlx_lm.models.rope_utils import initialize_rope
 
-
 def build_target_layer_ids(num_target_layers: int, num_draft_layers: int) -> list[int]:
     if num_draft_layers <= 1:
         return [num_target_layers // 2]
@@ -265,17 +264,7 @@ class DFlashDecoderLayer(nn.Module):
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        if hasattr(mx.fast, "dflash_gated_mlp") and not isinstance(
-            self.mlp.gate_proj, nn.QuantizedLinear
-        ):
-            hidden_states = mx.fast.dflash_gated_mlp(
-                hidden_states,
-                self.mlp.gate_proj.weight,
-                self.mlp.up_proj.weight,
-                self.mlp.down_proj.weight,
-            )
-        else:
-            hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states)
         return residual + hidden_states
 
 

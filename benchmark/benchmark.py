@@ -20,10 +20,10 @@ from mlx_lm import stream_generate as mlx_stream_generate
 from mlx_lm.utils import load as load_pristine_target
 
 from dflash_mlx.runtime import (
-    generate_dflash_once,
     load_draft_bundle,
     load_target_bundle,
     resolve_model_ref,
+    stream_dflash_generate,
 )
 
 DEFAULT_SCHEDULES: tuple[int, ...] = (8, 16, 32)
@@ -226,6 +226,9 @@ def _ttft_ms_from_baseline(result: dict[str, Any]) -> float:
 
 
 def _ttft_ms_from_dflash(result: dict[str, Any]) -> float:
+    ttft_us = result.get("ttft_us")
+    if ttft_us is not None:
+        return float(ttft_us) / 1_000.0
     phase_timings = dict(result.get("phase_timings_us", {}))
     return float(phase_timings.get("prefill", 0.0)) / 1_000.0
 
@@ -262,12 +265,27 @@ def _generate_stock_baseline_once(
     prompt: str,
     max_new_tokens: int,
     no_eos: bool,
+    use_chat_template: bool = True,
+    prompt_tokens_override: list[int] | None = None,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
             mx.reset_peak_memory()
         except Exception:
             pass
+
+    # Pre-tokenized input: feed token IDs directly (mlx_stream_generate accepts List[int]).
+    # This guarantees baseline + DFlash see byte-identical prompt tokens.
+    if prompt_tokens_override is not None:
+        baseline_input: Any = list(prompt_tokens_override)
+    elif use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+        baseline_input = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        baseline_input = prompt
 
     original_eos_token_ids = getattr(tokenizer, "eos_token_ids", None)
     original_eos_token_id = getattr(tokenizer, "eos_token_id", None)
@@ -288,7 +306,7 @@ def _generate_stock_baseline_once(
         for response in mlx_stream_generate(
             target_model,
             tokenizer,
-            prompt,
+            baseline_input,
             max_tokens=max_new_tokens,
         ):
             final_response = response
@@ -327,6 +345,63 @@ def _generate_stock_baseline_once(
     }
 
 
+def _generate_dflash_stream_once(
+    *,
+    target_model: Any,
+    tokenizer: Any,
+    draft_model: Any,
+    prompt: str,
+    max_new_tokens: int,
+    use_chat_template: bool,
+    block_tokens: int | None,
+    verify_chunk_tokens: int | None,
+    stop_token_ids: list[int] | None,
+    suppress_token_ids: list[int] | None,
+    prompt_tokens_override: list[int] | None = None,
+) -> dict[str, Any]:
+    if hasattr(mx, "reset_peak_memory"):
+        try:
+            mx.reset_peak_memory()
+        except Exception:
+            pass
+
+    start_ns = time.perf_counter_ns()
+    first_token_us: float | None = None
+    summary: dict[str, Any] | None = None
+    stream = stream_dflash_generate(
+        target_model=target_model,
+        tokenizer=tokenizer,
+        draft_model=draft_model,
+        prompt=prompt,
+        max_new_tokens=max_new_tokens,
+        use_chat_template=use_chat_template,
+        block_tokens=block_tokens,
+        verify_chunk_tokens=verify_chunk_tokens,
+        stop_token_ids=stop_token_ids,
+        suppress_token_ids=suppress_token_ids,
+        prompt_tokens_override=prompt_tokens_override,
+    )
+    try:
+        for event in stream:
+            event_type = event.get("event")
+            if event_type == "token" and first_token_us is None:
+                first_token_us = (time.perf_counter_ns() - start_ns) / 1_000.0
+            elif event_type == "summary":
+                summary = dict(event)
+    finally:
+        stream.close()
+
+    if summary is None:
+        raise RuntimeError("DFlash stream did not yield a summary event")
+
+    summary["ttft_us"] = (
+        first_token_us
+        if first_token_us is not None
+        else float(dict(summary.get("phase_timings_us", {})).get("prefill", 0.0))
+    )
+    return summary
+
+
 def _release_loaded_models() -> None:
     gc.collect()
     if hasattr(mx, "clear_cache"):
@@ -358,6 +433,18 @@ def _run_once_sequential(
     pristine_target_model, pristine_tokenizer, pristine_meta = _load_pristine_target_bundle(
         target_model_ref
     )
+    # Pre-tokenize ONCE with pristine tokenizer. Same token IDs feed both paths —
+    # no reliance on str→encode round-trip equality across tokenizer versions.
+    if use_chat_template and hasattr(pristine_tokenizer, "apply_chat_template"):
+        prompt_tokens = list(
+            pristine_tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+    else:
+        prompt_tokens = list(pristine_tokenizer.encode(prompt))
     try:
         baseline = _generate_stock_baseline_once(
             target_model=pristine_target_model,
@@ -365,6 +452,8 @@ def _run_once_sequential(
             prompt=prompt,
             max_new_tokens=max_new_tokens,
             no_eos=no_eos,
+            use_chat_template=use_chat_template,
+            prompt_tokens_override=prompt_tokens,
         )
     finally:
         del pristine_target_model
@@ -381,11 +470,26 @@ def _run_once_sequential(
         lazy=True,
         quantize_draft=quantize_draft,
     )
+    # Cross-check: DFlash tokenizer is a different instance; tokens must match.
+    if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+        dflash_prompt_tokens = list(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=True,
+                add_generation_prompt=True,
+            )
+        )
+    else:
+        dflash_prompt_tokens = list(tokenizer.encode(prompt))
+    assert prompt_tokens == dflash_prompt_tokens, (
+        f"Tokenizer drift between pristine and DFlash bundles: "
+        f"{len(prompt_tokens)} vs {len(dflash_prompt_tokens)} tokens"
+    )
     dflash_eos_token_ids = get_stop_token_ids(tokenizer)
     dflash_stop_token_ids = [] if no_eos else dflash_eos_token_ids
     dflash_suppress_token_ids = dflash_eos_token_ids if no_eos else None
     try:
-        dflash = generate_dflash_once(
+        dflash = _generate_dflash_stream_once(
             target_model=target_model,
             tokenizer=tokenizer,
             draft_model=draft_model,
@@ -396,6 +500,7 @@ def _run_once_sequential(
             verify_chunk_tokens=verify_chunk_tokens,
             stop_token_ids=dflash_stop_token_ids,
             suppress_token_ids=dflash_suppress_token_ids,
+            prompt_tokens_override=prompt_tokens,
         )
     finally:
         del target_model

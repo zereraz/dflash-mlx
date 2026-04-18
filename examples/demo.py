@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import mlx.core as mx
+from mlx_lm.generate import stream_generate as mlx_stream_generate
 from mlx_lm.utils import load as load_pristine_target
 
 from dflash_mlx.runtime import (
@@ -22,7 +23,6 @@ from dflash_mlx.runtime import (
     load_draft_bundle,
     load_target_bundle,
     resolve_model_ref,
-    stream_baseline_generate,
     stream_dflash_generate,
 )
 
@@ -321,28 +321,20 @@ def run_baseline(
     last_status_at: Optional[float] = None
     last_status_tokens = 0
 
-    for event in stream_baseline_generate(
-        target_model=target_model,
-        tokenizer=tokenizer,
-        prompt=prompt,
-        max_new_tokens=max_tokens,
-        use_chat_template=use_chat_template,
-        stop_token_ids=[] if no_eos else eos_ids,
-        suppress_token_ids=eos_ids if no_eos else None,
-        prompt_tokens_override=prompt_tokens,
-        quantize_kv_cache=quantize_kv_cache,
+    for response in mlx_stream_generate(
+        target_model,
+        tokenizer,
+        prompt_tokens,
+        max_tokens=max_tokens,
     ):
-        if event["event"] == "prefill":
-            prefill_us = float(event["prefill_us"])
-            continue
-        if event["event"] != "token":
-            continue
         if first_token_at is None:
             first_token_at = time.monotonic()
-        token_text = _maybe_decode_token(tokenizer, int(event["token_id"]))
+            prefill_us = (first_token_at - started_at) * 1e6
+        token_text = response.text
         sys.stdout.write(token_text)
         sys.stdout.flush()
-        token_count = int(event["generated_tokens"])
+        token_count = int(response.generation_tokens)
+        final_tps = float(response.generation_tps)
         if token_count % 8 == 0:
             now = time.monotonic()
             current_tps = _sample_tps(
@@ -363,11 +355,6 @@ def run_baseline(
             last_status_at = now
             last_status_tokens = token_count
 
-    final_tps = _avg_tps_since_prefill(
-        started_at=started_at,
-        prefill_us=prefill_us,
-        token_count=token_count,
-    )
     if token_count > 0:
         current_tps = _sample_tps(
             now=time.monotonic(),
@@ -467,11 +454,9 @@ def run_dflash(
                 last_status_tokens = token_count
         elif event["event"] == "summary":
             acceptance_ratio = float(event["acceptance_ratio"])
-    final_tps = _avg_tps_since_prefill(
-        started_at=started_at,
-        prefill_us=prefill_us,
-        token_count=token_count,
-    )
+            summary_prefill_us = float(event["phase_timings_us"]["prefill"])
+            generation_us = max(0.0, float(event["elapsed_us"]) - summary_prefill_us)
+            final_tps = token_count / (generation_us / 1e6) if generation_us > 0.0 else 0.0
     if token_count > 0:
         current_tps = _sample_tps(
             now=time.monotonic(),

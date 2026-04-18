@@ -3,88 +3,88 @@
     "chip": "Apple M5 Max",
     "memory_gb": "64",
     "mlx_version": "0.31.1",
-    "python": "3.14.3"
+    "python": "3.13.5"
   },
   "config": {
     "target_model": "Qwen/Qwen3.5-9B",
     "draft_model": "z-lab/Qwen3.5-9B-DFlash",
     "max_new_tokens": 2048,
     "block_tokens": 16,
-    "cooldown": 10,
+    "cooldown": 60,
     "prompt": "The function $f$ satisfies the functional equation \\[ f(x) + f(y) = f(x + y) - xy - 1 \\] for all real numbers $x$ and $y$. If $f(1) = 1$, then find all integers $n$ such that $f(n) = n$. Enter all such integers, separated by commas. Please reason step by step, and put your final answer within \\boxed{}.",
-    "prompt_tokens": 92,
+    "prompt_tokens": 102,
     "prompt_id": "the_function_f_satisfies_the_functional_equation",
     "repeat": 3,
-    "git_hash": "da458e2"
+    "git_hash": "4bfb082"
   },
   "runs": [
     {
       "run": 1,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 592.0233340002596,
-        "generation_tps": 30.96259253173809,
-        "peak_memory_gb": 18.035017641
+        "ttft_ms": 1476.5616670483723,
+        "generation_tps": 30.70304207694151,
+        "peak_memory_gb": 18.063354566
       },
       "dflash": {
-        "ttft_ms": 479.782833,
-        "generation_tps": 128.5223462791554,
-        "tokens_per_cycle": 9.394495412844037,
-        "cycles": 218,
-        "acceptance_ratio": 0.8935546875,
+        "ttft_ms": 554.835125,
+        "generation_tps": 102.57608636676476,
+        "tokens_per_cycle": 9.225225225225225,
+        "cycles": 222,
+        "acceptance_ratio": 0.8916015625,
         "acceptance_first_20_avg": 7.4,
-        "acceptance_last_20_avg": 10.5,
-        "peak_memory_gb": 20.321775024
+        "acceptance_last_20_avg": 10.35,
+        "peak_memory_gb": 20.318006444
       },
-      "speedup": 4.150890987161817
+      "speedup": 3.340909546021861
     },
     {
       "run": 2,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 546.1895419994107,
-        "generation_tps": 30.74705517955003,
-        "peak_memory_gb": 18.035034027
+        "ttft_ms": 696.9918750110082,
+        "generation_tps": 30.962420366851827,
+        "peak_memory_gb": 18.063351123
       },
       "dflash": {
-        "ttft_ms": 482.833792,
-        "generation_tps": 127.07103429811174,
-        "tokens_per_cycle": 9.394495412844037,
-        "cycles": 218,
-        "acceptance_ratio": 0.8935546875,
+        "ttft_ms": 486.36541700000004,
+        "generation_tps": 113.00267096826519,
+        "tokens_per_cycle": 9.225225225225225,
+        "cycles": 222,
+        "acceptance_ratio": 0.8916015625,
         "acceptance_first_20_avg": 7.4,
-        "acceptance_last_20_avg": 10.5,
-        "peak_memory_gb": 20.321775024
+        "acceptance_last_20_avg": 10.35,
+        "peak_memory_gb": 20.317982124
       },
-      "speedup": 4.13278714192529
+      "speedup": 3.649671751412727
     },
     {
       "run": 3,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 545.9269579987449,
-        "generation_tps": 32.025298046424595,
-        "peak_memory_gb": 18.035034027
+        "ttft_ms": 654.1408750344999,
+        "generation_tps": 30.54120119514099,
+        "peak_memory_gb": 18.062799521
       },
       "dflash": {
-        "ttft_ms": 498.8505,
-        "generation_tps": 111.48038686851403,
-        "tokens_per_cycle": 9.394495412844037,
-        "cycles": 218,
-        "acceptance_ratio": 0.8935546875,
+        "ttft_ms": 507.922583,
+        "generation_tps": 123.80497321391597,
+        "tokens_per_cycle": 9.225225225225225,
+        "cycles": 222,
+        "acceptance_ratio": 0.8916015625,
         "acceptance_first_20_avg": 7.4,
-        "acceptance_last_20_avg": 10.5,
-        "peak_memory_gb": 20.321775024
+        "acceptance_last_20_avg": 10.35,
+        "peak_memory_gb": 20.31800158
       },
-      "speedup": 3.481010128521194
+      "speedup": 4.053703468402316
     }
   ],
   "summary": {
-    "baseline_tps_median": 30.96259253173809,
-    "dflash_tps_median": 127.07103429811174,
-    "dflash_tps_min": 111.48038686851403,
-    "dflash_tps_max": 128.5223462791554,
-    "speedup_median": 4.13278714192529,
-    "acceptance_ratio_median": 0.8935546875
+    "baseline_tps_median": 30.70304207694151,
+    "dflash_tps_median": 113.00267096826519,
+    "dflash_tps_min": 102.57608636676476,
+    "dflash_tps_max": 123.80497321391597,
+    "speedup_median": 3.649671751412727,
+    "acceptance_ratio_median": 0.8916015625
   }
 }

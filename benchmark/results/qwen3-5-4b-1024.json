@@ -3,88 +3,88 @@
     "chip": "Apple M5 Max",
     "memory_gb": "64",
     "mlx_version": "0.31.1",
-    "python": "3.14.3"
+    "python": "3.13.5"
   },
   "config": {
     "target_model": "Qwen/Qwen3.5-4B",
     "draft_model": "z-lab/Qwen3.5-4B-DFlash",
     "max_new_tokens": 1024,
     "block_tokens": 16,
-    "cooldown": 10,
+    "cooldown": 60,
     "prompt": "The function $f$ satisfies the functional equation \\[ f(x) + f(y) = f(x + y) - xy - 1 \\] for all real numbers $x$ and $y$. If $f(1) = 1$, then find all integers $n$ such that $f(n) = n$. Enter all such integers, separated by commas. Please reason step by step, and put your final answer within \\boxed{}.",
-    "prompt_tokens": 92,
+    "prompt_tokens": 102,
     "prompt_id": "the_function_f_satisfies_the_functional_equation",
     "repeat": 3,
-    "git_hash": "da458e2"
+    "git_hash": "4bfb082"
   },
   "runs": [
     {
       "run": 1,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 674.4975829988107,
-        "generation_tps": 56.596568008156716,
-        "peak_memory_gb": 8.497592835
+        "ttft_ms": 708.6709589930251,
+        "generation_tps": 54.067862016787494,
+        "peak_memory_gb": 8.526950279
       },
       "dflash": {
-        "ttft_ms": 200.824083,
-        "generation_tps": 192.42694425183436,
-        "tokens_per_cycle": 8.827586206896552,
-        "cycles": 116,
-        "acceptance_ratio": 0.88671875,
-        "acceptance_first_20_avg": 7.05,
-        "acceptance_last_20_avg": 9.35,
-        "peak_memory_gb": 9.75433584
+        "ttft_ms": 200.003083,
+        "generation_tps": 177.54975617435295,
+        "tokens_per_cycle": 7.366906474820144,
+        "cycles": 139,
+        "acceptance_ratio": 0.8642578125,
+        "acceptance_first_20_avg": 6.7,
+        "acceptance_last_20_avg": 4.4,
+        "peak_memory_gb": 9.749469436
       },
-      "speedup": 3.3999754936395035
+      "speedup": 3.2838316432638974
     },
     {
       "run": 2,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 238.11291699894355,
-        "generation_tps": 53.48319631354195,
-        "peak_memory_gb": 8.497594935
+        "ttft_ms": 239.74358296254647,
+        "generation_tps": 53.796473924423914,
+        "peak_memory_gb": 8.526952585
       },
       "dflash": {
-        "ttft_ms": 200.85829199999998,
-        "generation_tps": 197.48912222007533,
-        "tokens_per_cycle": 8.827586206896552,
-        "cycles": 116,
-        "acceptance_ratio": 0.88671875,
-        "acceptance_first_20_avg": 7.05,
-        "acceptance_last_20_avg": 9.35,
-        "peak_memory_gb": 9.754350816
+        "ttft_ms": 203.408625,
+        "generation_tps": 182.96386617036183,
+        "tokens_per_cycle": 7.366906474820144,
+        "cycles": 139,
+        "acceptance_ratio": 0.8642578125,
+        "acceptance_first_20_avg": 6.7,
+        "acceptance_last_20_avg": 4.4,
+        "peak_memory_gb": 9.749465212
       },
-      "speedup": 3.6925452447214915
+      "speedup": 3.401038261864504
     },
     {
       "run": 3,
       "thermal_pressure": "unknown",
       "baseline": {
-        "ttft_ms": 237.1160000002419,
-        "generation_tps": 53.20822979426412,
-        "peak_memory_gb": 8.497589598
+        "ttft_ms": 239.24262501532212,
+        "generation_tps": 53.430648889459256,
+        "peak_memory_gb": 8.526959714
       },
       "dflash": {
-        "ttft_ms": 193.4195,
-        "generation_tps": 199.6134519810948,
-        "tokens_per_cycle": 8.827586206896552,
-        "cycles": 116,
-        "acceptance_ratio": 0.88671875,
-        "acceptance_first_20_avg": 7.05,
-        "acceptance_last_20_avg": 9.35,
-        "peak_memory_gb": 9.75435504
+        "ttft_ms": 213.016458,
+        "generation_tps": 182.8683629741386,
+        "tokens_per_cycle": 7.366906474820144,
+        "cycles": 139,
+        "acceptance_ratio": 0.8642578125,
+        "acceptance_first_20_avg": 6.7,
+        "acceptance_last_20_avg": 4.4,
+        "peak_memory_gb": 9.749492348
       },
-      "speedup": 3.75155220823778
+      "speedup": 3.4225368168832904
     }
   ],
   "summary": {
-    "baseline_tps_median": 53.48319631354195,
-    "dflash_tps_median": 197.48912222007533,
-    "dflash_tps_min": 192.42694425183436,
-    "dflash_tps_max": 199.6134519810948,
-    "speedup_median": 3.6925452447214915,
-    "acceptance_ratio_median": 0.88671875
+    "baseline_tps_median": 53.796473924423914,
+    "dflash_tps_median": 182.8683629741386,
+    "dflash_tps_min": 177.54975617435295,
+    "dflash_tps_max": 182.96386617036183,
+    "speedup_median": 3.401038261864504,
+    "acceptance_ratio_median": 0.8642578125
   }
 }
