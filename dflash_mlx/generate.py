@@ -21,6 +21,7 @@ DRAFT_REGISTRY = {
     "Qwen3.5-9B": "z-lab/Qwen3.5-9B-DFlash",
     "Qwen3.5-27B": "z-lab/Qwen3.5-27B-DFlash",
     "Qwen3.5-35B-A3B": "z-lab/Qwen3.5-35B-A3B-DFlash",
+    "Qwen3.6-35B-A3B": "z-lab/Qwen3.6-35B-A3B-DFlash",
     "Qwen3-4B": "z-lab/Qwen3-4B-DFlash-b16",
     "Qwen3-8B": "z-lab/Qwen3-8B-DFlash-b16",
 }
