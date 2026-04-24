@@ -50,6 +50,14 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_LM_HEAD_ARGMAX": "1"},
         "block_tokens": 16,
     },
+    "verify8_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_VERIFY_LEN": "8"},
+        "block_tokens": 16,
+    },
+    "verify12_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_VERIFY_LEN": "12"},
+        "block_tokens": 16,
+    },
     "sdpa64_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "64"},
         "block_tokens": 16,
@@ -64,6 +72,14 @@ SCENARIOS: dict[str, dict[str, Any]] = {
     },
     "fastpath_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_PREFILL_CACHE_FASTPATH": "1"},
+        "block_tokens": 16,
+    },
+    "fastpath_skip_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_PREFILL_CACHE_FASTPATH": "1",
+            "DFLASH_PREFILL_SKIP_CAPTURE": "1",
+        },
         "block_tokens": 16,
     },
 }
