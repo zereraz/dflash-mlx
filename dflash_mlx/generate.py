@@ -119,7 +119,7 @@ def run_generate(
     use_chat_template: bool,
     draft_ref: Optional[str],
     quantize_kv_cache: bool = False,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
 ) -> int:
     prefill_step_size = max(1, int(prefill_step_size))
     target_model, tokenizer, draft_model, _ = load_runtime_components(
@@ -174,7 +174,7 @@ def main() -> None:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=512,
+        default=2048,
         help="Target prefill chunk size for DFlash hidden-state capture.",
     )
     parser.add_argument(

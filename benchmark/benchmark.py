@@ -367,7 +367,7 @@ def _generate_dflash_stream_once(
     suppress_token_ids: list[int] | None,
     prompt_tokens_override: list[int] | None = None,
     quantize_kv_cache: bool = False,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
@@ -561,7 +561,7 @@ def benchmark_once(
     quantize_kv_cache: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
     cooldown: int = 10,
 ) -> dict[str, Any]:
     prefill_step_size = max(1, int(prefill_step_size))
@@ -613,7 +613,7 @@ def benchmark_matrix(
     quantize_kv_cache: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
     cooldown: int = 10,
 ) -> dict[str, Any]:
     prefill_step_size = max(1, int(prefill_step_size))
@@ -704,7 +704,7 @@ def main() -> None:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=512,
+        default=2048,
         help="Target prefill chunk size for DFlash hidden-state capture.",
     )
     parser.add_argument("--no-eos", action="store_true")

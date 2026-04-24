@@ -79,6 +79,17 @@ class ContextOnlyDraftKVCache:
             return 0
         return int(self.keys.shape[2])
 
+    def set_context(
+        self,
+        keys: mx.array,
+        values: mx.array,
+        *,
+        offset: int,
+    ) -> None:
+        self.keys = keys
+        self.values = values
+        self.offset = int(offset)
+
 
 @dataclass
 class DFlashDraftModelArgs:
@@ -134,6 +145,25 @@ class DFlashAttention(nn.Module):
             max_position_embeddings=args.max_position_embeddings,
         )
 
+    def context_kv(
+        self,
+        target_hidden: mx.array,
+        *,
+        offset: int,
+    ) -> tuple[mx.array, mx.array]:
+        batch, ctx_len, _ = target_hidden.shape
+        context_keys = self.k_proj(target_hidden)
+        context_keys = self.k_norm(
+            context_keys.reshape(batch, ctx_len, self.n_kv_heads, -1)
+        ).transpose(0, 2, 1, 3)
+        context_values = self.v_proj(target_hidden).reshape(
+            batch,
+            ctx_len,
+            self.n_kv_heads,
+            -1,
+        ).transpose(0, 2, 1, 3)
+        return self.rope(context_keys, offset=int(offset)), context_values
+
     def __call__(
         self,
         hidden_states: mx.array,
@@ -148,17 +178,6 @@ class DFlashAttention(nn.Module):
         queries = self.q_norm(queries.reshape(batch, block_len, self.n_heads, -1)).transpose(
             0, 2, 1, 3
         )
-
-        context_keys = self.k_proj(target_hidden)
-        context_keys = self.k_norm(
-            context_keys.reshape(batch, ctx_len, self.n_kv_heads, -1)
-        ).transpose(0, 2, 1, 3)
-        context_values = self.v_proj(target_hidden).reshape(
-            batch,
-            ctx_len,
-            self.n_kv_heads,
-            -1,
-        ).transpose(0, 2, 1, 3)
 
         noise_keys = self.k_proj(hidden_states)
         noise_keys = self.k_norm(
@@ -176,26 +195,54 @@ class DFlashAttention(nn.Module):
                 cache_offset = int(cache.offset)
                 query_offset = cache_offset + ctx_len
                 queries = self.rope(queries, offset=query_offset)
-                context_keys = self.rope(context_keys, offset=cache_offset)
                 noise_keys = self.rope(noise_keys, offset=query_offset)
 
-                cache.append_context(context_keys, context_values, ctx_len)
+                if ctx_len > 0:
+                    context_keys, context_values = self.context_kv(
+                        target_hidden,
+                        offset=cache_offset,
+                    )
+                    cache.append_context(context_keys, context_values, ctx_len)
                 cached_keys, cached_values = cache.fetch()
-                keys = mx.concatenate([cached_keys, noise_keys], axis=-2)
-                values = mx.concatenate([cached_values, noise_values], axis=-2)
-                output = scaled_dot_product_attention(
-                    queries,
-                    keys,
-                    values,
-                    cache=None,
-                    scale=self.scale,
-                    mask=None,
-                )
+                if cached_keys is None or cached_values is None:
+                    keys = noise_keys
+                    values = noise_values
+                    output = scaled_dot_product_attention(
+                        queries,
+                        keys,
+                        values,
+                        cache=None,
+                        scale=self.scale,
+                        mask=None,
+                    )
+                elif hasattr(mx.fast, "dflash_cross_attention"):
+                    output = mx.fast.dflash_cross_attention(
+                        queries,
+                        cached_keys,
+                        cached_values,
+                        noise_keys,
+                        noise_values,
+                        scale=self.scale,
+                    )
+                else:
+                    keys = mx.concatenate([cached_keys, noise_keys], axis=-2)
+                    values = mx.concatenate([cached_values, noise_values], axis=-2)
+                    output = scaled_dot_product_attention(
+                        queries,
+                        keys,
+                        values,
+                        cache=None,
+                        scale=self.scale,
+                        mask=None,
+                    )
             else:
                 cache_offset = int(getattr(cache, "offset", 0) or 0)
                 query_offset = cache_offset + ctx_len
                 queries = self.rope(queries, offset=query_offset)
-                context_keys = self.rope(context_keys, offset=cache_offset)
+                context_keys, context_values = self.context_kv(
+                    target_hidden,
+                    offset=cache_offset,
+                )
                 noise_keys = self.rope(noise_keys, offset=query_offset)
 
                 keys = mx.concatenate([context_keys, noise_keys], axis=-2)
@@ -211,7 +258,7 @@ class DFlashAttention(nn.Module):
                 )
         else:
             queries = self.rope(queries, offset=ctx_len)
-            context_keys = self.rope(context_keys, offset=0)
+            context_keys, context_values = self.context_kv(target_hidden, offset=0)
             noise_keys = self.rope(noise_keys, offset=ctx_len)
             if hasattr(mx.fast, "dflash_cross_attention"):
                 output = mx.fast.dflash_cross_attention(
@@ -288,15 +335,51 @@ class DFlashDraftModel(nn.Module):
     def _project_target_hidden(self, target_hidden: mx.array) -> mx.array:
         return self.hidden_norm(self.fc(target_hidden))
 
+    def prefill_context_cache(
+        self,
+        *,
+        target_hidden_segments: list[tuple[mx.array, int]],
+        cache: list[Any],
+        total_context_len: int,
+    ) -> None:
+        if not target_hidden_segments:
+            return
+        for layer, layer_cache in zip(self.layers, cache, strict=True):
+            if not isinstance(layer_cache, ContextOnlyDraftKVCache):
+                continue
+            key_parts = []
+            value_parts = []
+            for target_hidden, offset in target_hidden_segments:
+                if int(target_hidden.shape[1]) <= 0:
+                    continue
+                keys, values = layer.self_attn.context_kv(
+                    target_hidden,
+                    offset=int(offset),
+                )
+                key_parts.append(keys)
+                value_parts.append(values)
+            if not key_parts:
+                continue
+            layer_cache.set_context(
+                mx.concatenate(key_parts, axis=2),
+                mx.concatenate(value_parts, axis=2),
+                offset=int(total_context_len),
+            )
+
     def __call__(
         self,
         *,
         noise_embedding: mx.array,
         target_hidden: mx.array,
         cache: Optional[list[Any]] = None,
+        target_hidden_is_projected: bool = False,
     ) -> mx.array:
         hidden_states = noise_embedding
-        projected_hidden = self._project_target_hidden(target_hidden)
+        projected_hidden = (
+            target_hidden
+            if target_hidden_is_projected
+            else self._project_target_hidden(target_hidden)
+        )
 
         if cache is None:
             cache = [None] * len(self.layers)

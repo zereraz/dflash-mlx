@@ -232,7 +232,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 stop_token_ids=stop_token_ids,
                 prompt_tokens_override=prompt,
                 quantize_kv_cache=getattr(self.model_provider.cli_args, "quantize_kv_cache", False),
-                prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 512),
+                prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 2048),
             )
 
             try:
@@ -603,7 +603,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=512,
+        default=2048,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(

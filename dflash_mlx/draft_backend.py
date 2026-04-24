@@ -38,8 +38,10 @@ class EagerDraftBackend:
         draft_cache: list[Any],
         staged_first: mx.array,
         target_hidden: mx.array,
+        target_hidden_is_projected: bool,
         block_len: int,
         mask_token_tail: mx.array,
+        mask_embedding_tail: Optional[mx.array],
         suppress_token_mask: Optional[mx.array],
         async_launch: bool,
     ) -> mx.array:
@@ -48,15 +50,28 @@ class EagerDraftBackend:
 
         from dflash_mlx import runtime as runtime_mod
 
-        block_token_ids = mx.concatenate(
-            [staged_first[:1], mask_token_tail[: int(block_len) - 1]],
-            axis=0,
+        block_tail_len = int(block_len) - 1
+        first_embedding = runtime_mod._target_embed_tokens(target_model)(
+            staged_first[:1][None]
         )
-        noise_embedding = runtime_mod._target_embed_tokens(target_model)(block_token_ids[None])
+        if mask_embedding_tail is not None and block_tail_len > 0:
+            noise_embedding = mx.concatenate(
+                [first_embedding, mask_embedding_tail[:, :block_tail_len, :]],
+                axis=1,
+            )
+        else:
+            block_token_ids = mx.concatenate(
+                [staged_first[:1], mask_token_tail[:block_tail_len]],
+                axis=0,
+            )
+            noise_embedding = runtime_mod._target_embed_tokens(target_model)(
+                block_token_ids[None]
+            )
         draft_hidden = draft_model(
             noise_embedding=noise_embedding,
             target_hidden=target_hidden,
             cache=draft_cache,
+            target_hidden_is_projected=target_hidden_is_projected,
         )
         draft_logits = runtime_mod._lm_head_logits(target_model, draft_hidden[:, 1:, :])
         drafted = runtime_mod.greedy_tokens_with_mask(

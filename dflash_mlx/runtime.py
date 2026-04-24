@@ -23,6 +23,7 @@ from mlx_lm.utils import load, load_model
 from dflash_mlx.adapter import detect_engine
 from dflash_mlx.draft_backend import make_draft_backend
 from dflash_mlx.model import (
+    ContextOnlyDraftKVCache,
     DFlashDraftModel,
     DFlashDraftModelArgs,
     extract_context_feature,
@@ -215,6 +216,92 @@ def _resolve_draft_window() -> tuple[int, int]:
     sink = int(os.environ.get("DFLASH_DRAFT_SINK", "64").strip())
     window = int(os.environ.get("DFLASH_DRAFT_WINDOW", "1024").strip())
     return max(0, sink), max(1, window)
+
+
+def _prefill_cache_fastpath_enabled() -> bool:
+    raw = os.environ.get("DFLASH_PREFILL_CACHE_FASTPATH", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _prefill_skip_capture_enabled() -> bool:
+    raw = os.environ.get("DFLASH_PREFILL_SKIP_CAPTURE", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _draft_context_retain_ranges(
+    prompt_len: int,
+    *,
+    sink_size: int,
+    window_size: int,
+) -> list[tuple[int, int]]:
+    if prompt_len <= 0:
+        return []
+    ranges: list[tuple[int, int]] = []
+    if sink_size > 0:
+        ranges.append((0, min(int(sink_size), prompt_len)))
+    window_start = max(0, prompt_len - max(0, int(window_size)))
+    if window_start < prompt_len:
+        ranges.append((window_start, prompt_len))
+    ranges.sort()
+
+    merged: list[tuple[int, int]] = []
+    for start, end in ranges:
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _range_overlaps_chunk(
+    ranges: list[tuple[int, int]],
+    *,
+    chunk_start: int,
+    chunk_end: int,
+) -> list[tuple[int, int]]:
+    overlaps: list[tuple[int, int]] = []
+    for start, end in ranges:
+        overlap_start = max(start, chunk_start)
+        overlap_end = min(end, chunk_end)
+        if overlap_start < overlap_end:
+            overlaps.append((overlap_start, overlap_end))
+    return overlaps
+
+
+def _supports_draft_context_prefill(draft_cache: list[Any]) -> bool:
+    return all(isinstance(cache, ContextOnlyDraftKVCache) for cache in draft_cache)
+
+
+def _draft_hidden_dtype(draft_model: DFlashDraftModel) -> Any:
+    weight = getattr(getattr(draft_model, "fc", None), "weight", None)
+    return getattr(weight, "dtype", mx.float16)
+
+
+def _empty_projected_target_hidden(draft_model: DFlashDraftModel) -> mx.array:
+    return mx.zeros(
+        (1, 0, int(draft_model.args.hidden_size)),
+        dtype=_draft_hidden_dtype(draft_model),
+    )
+
+
+def _draft_cache_arrays(draft_cache: list[Any]) -> list[mx.array]:
+    arrays: list[mx.array] = []
+    for cache in draft_cache:
+        if isinstance(cache, ContextOnlyDraftKVCache):
+            if cache.keys is not None:
+                arrays.append(cache.keys)
+            if cache.values is not None:
+                arrays.append(cache.values)
+    return arrays
+
+
+def _project_target_feature_for_draft(
+    draft_model: DFlashDraftModel,
+    target_feature: mx.array,
+) -> mx.array:
+    return draft_model._project_target_hidden(target_feature)
 
 
 def _profile_dflash_cycles_enabled() -> bool:
@@ -784,6 +871,7 @@ def target_forward_with_hidden_states(
     input_embeddings: Optional[mx.array] = None,
     capture_layer_ids: Optional[set[int]] = None,
     skip_logits: bool = False,
+    force_hidden_state: bool = False,
 ) -> tuple[Optional[mx.array], list[mx.array] | dict[int, mx.array]]:
     inner = _target_text_model(target_model)
     hidden_states = input_embeddings if input_embeddings is not None else inner.embed_tokens(input_ids)
@@ -817,6 +905,11 @@ def target_forward_with_hidden_states(
                 captured.append(h)
             elif capture_layer_ids is not None and capture_key in capture_layer_ids:
                 captured[capture_key] = h
+    if force_hidden_state:
+        if isinstance(captured, dict):
+            captured[-1] = h
+        else:
+            captured.append(h)
     if skip_logits:
         return None, captured
     normalized = inner.norm(h)
@@ -1141,7 +1234,7 @@ def generate_dflash_once(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
@@ -1225,33 +1318,92 @@ def generate_dflash_once(
         prefill_step_size = max(1, int(prefill_step_size))
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
+        target_hidden_chunks: list[mx.array] = []
+        target_hidden_is_projected = False
+        prefill_fastpath = (
+            _prefill_cache_fastpath_enabled()
+            and _supports_draft_context_prefill(draft_cache)
+        )
+        skip_prefill_capture = prefill_fastpath and _prefill_skip_capture_enabled()
+        retained_context_ranges = _draft_context_retain_ranges(
+            prompt_len,
+            sink_size=draft_sink_size,
+            window_size=draft_window_size,
+        )
+        retained_context_tokens = sum(
+            end - start for start, end in retained_context_ranges
+        )
+        retained_context_segments: list[tuple[mx.array, int]] = []
         for chunk_start in range(0, prompt_len, prefill_step_size):
             chunk_end = min(chunk_start + prefill_step_size, prompt_len)
             chunk_ids = prompt_array[:, chunk_start:chunk_end]
             is_last_chunk = (chunk_end >= prompt_len)
+            chunk_retained_ranges = _range_overlaps_chunk(
+                retained_context_ranges,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+            )
+            needs_prefill_features = (not skip_prefill_capture) or bool(
+                chunk_retained_ranges
+            )
             prefill_logits, prefill_hidden_states = target_forward_with_hidden_states(
                 target_model,
                 input_ids=chunk_ids,
                 cache=target_cache,
-                capture_layer_ids=capture_layer_ids,
+                capture_layer_ids=(
+                    capture_layer_ids if needs_prefill_features else set()
+                ),
                 skip_logits=not is_last_chunk,
+                force_hidden_state=not needs_prefill_features and not is_last_chunk,
             )
             if prefill_logits is not None:
                 _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
             else:
                 mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
+            if not needs_prefill_features:
+                del prefill_hidden_states
+                continue
             feat = extract_context_feature_from_dict(
                 prefill_hidden_states,
                 target_layer_id_list,
             )
-            if target_hidden is None:
-                target_hidden = mx.zeros(
-                    (feat.shape[0], prompt_len, feat.shape[-1]),
-                    dtype=feat.dtype,
-                )
-            target_hidden[:, chunk_start:chunk_end, :] = feat
-            mx.eval(target_hidden)
+            if prefill_fastpath:
+                projected_segments = []
+                for retain_start, retain_end in chunk_retained_ranges:
+                    local_start = retain_start - chunk_start
+                    local_end = retain_end - chunk_start
+                    projected = _project_target_feature_for_draft(
+                        draft_model,
+                        feat[:, local_start:local_end, :],
+                    )
+                    retained_context_segments.append((projected, retain_start))
+                    projected_segments.append(projected)
+                if projected_segments:
+                    mx.eval(*projected_segments)
+            else:
+                target_hidden_chunks.append(mx.contiguous(feat))
+                mx.eval(target_hidden_chunks[-1])
             del feat, prefill_hidden_states
+        if prefill_fastpath:
+            draft_model.prefill_context_cache(
+                target_hidden_segments=retained_context_segments,
+                cache=draft_cache,
+                total_context_len=prompt_len,
+            )
+            draft_cache_arrays = _draft_cache_arrays(draft_cache)
+            if draft_cache_arrays:
+                mx.eval(*draft_cache_arrays)
+            target_hidden = _empty_projected_target_hidden(draft_model)
+            target_hidden_is_projected = True
+        elif target_hidden is None:
+            if target_hidden_chunks:
+                target_hidden = mx.concatenate(target_hidden_chunks, axis=1)
+                mx.eval(target_hidden)
+            else:
+                target_hidden = mx.zeros(
+                    (1, 0, int(draft_model.args.hidden_size)),
+                    dtype=_draft_hidden_dtype(draft_model),
+                )
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
@@ -1269,6 +1421,13 @@ def generate_dflash_once(
             mask_token_id,
             dtype=mx.uint32,
         )
+        mask_embedding_tail = (
+            _target_embed_tokens(target_model)(mask_token_tail[None])
+            if int(mask_token_tail.shape[0]) > 0
+            else None
+        )
+        if mask_embedding_tail is not None:
+            mx.eval(mask_embedding_tail)
         generated_token_count = 0
         accepted_from_draft = 0
         cycles_completed = 0
@@ -1321,8 +1480,10 @@ def generate_dflash_once(
                         draft_cache=draft_cache,
                         staged_first=current_staged_first,
                         target_hidden=target_hidden,
+                        target_hidden_is_projected=target_hidden_is_projected,
                         block_len=block_len,
                         mask_token_tail=mask_token_tail,
+                        mask_embedding_tail=mask_embedding_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=False,
                     )
@@ -1343,8 +1504,10 @@ def generate_dflash_once(
                             draft_cache=draft_cache,
                             staged_first=current_staged_first,
                             target_hidden=target_hidden,
+                            target_hidden_is_projected=target_hidden_is_projected,
                             block_len=block_len,
                             mask_token_tail=mask_token_tail,
+                            mask_embedding_tail=mask_embedding_tail,
                             suppress_token_mask=suppress_token_mask,
                             async_launch=True,
                         )
@@ -1398,6 +1561,11 @@ def generate_dflash_once(
                 verify_hidden_states,
                 target_layer_id_list,
             )[:, : (1 + acceptance_len), :]
+            if target_hidden_is_projected:
+                committed_hidden = _project_target_feature_for_draft(
+                    draft_model,
+                    committed_hidden,
+                )
             if profile_cycles:
                 mx.eval(committed_hidden, posterior)
             else:
@@ -1422,8 +1590,10 @@ def generate_dflash_once(
                         draft_cache=draft_cache,
                         staged_first=staged_first_next,
                         target_hidden=committed_hidden,
+                        target_hidden_is_projected=target_hidden_is_projected,
                         block_len=next_block_len,
                         mask_token_tail=mask_token_tail,
+                        mask_embedding_tail=mask_embedding_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=True,
                     )
@@ -1530,6 +1700,9 @@ def generate_dflash_once(
                 "commit": commit_ns_total / 1_000.0,
             },
             "speculative_linear_cache": use_speculative_linear_cache,
+            "prefill_cache_fastpath": bool(prefill_fastpath),
+            "prefill_skip_capture": bool(skip_prefill_capture),
+            "prefill_context_tokens": int(retained_context_tokens),
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "verify_len_cap": int(verify_len_cap),
             "quantize_kv_cache": bool(quantize_kv_cache),
@@ -1566,7 +1739,7 @@ def stream_dflash_generate(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
-    prefill_step_size: int = 512,
+    prefill_step_size: int = 2048,
 ) -> Iterator[dict[str, Any]]:
     if quantize_kv_cache:
         configure_full_attention_split(target_model, enabled=False)
@@ -1627,32 +1800,79 @@ def stream_dflash_generate(
         prefill_step_size = max(1, int(prefill_step_size))
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
+        target_hidden_chunks: list[mx.array] = []
+        target_hidden_is_projected = False
+        prefill_fastpath = (
+            _prefill_cache_fastpath_enabled()
+            and _supports_draft_context_prefill(draft_cache)
+        )
+        skip_prefill_capture = prefill_fastpath and _prefill_skip_capture_enabled()
+        retained_context_ranges = _draft_context_retain_ranges(
+            prompt_len,
+            sink_size=draft_sink_size,
+            window_size=draft_window_size,
+        )
+        retained_context_tokens = sum(
+            end - start for start, end in retained_context_ranges
+        )
+        retained_context_segments: list[tuple[mx.array, int]] = []
         for chunk_start in range(0, prompt_len, prefill_step_size):
             chunk_end = min(chunk_start + prefill_step_size, prompt_len)
             chunk_ids = prompt_array[:, chunk_start:chunk_end]
             is_last_chunk = (chunk_end >= prompt_len)
+            chunk_retained_ranges = _range_overlaps_chunk(
+                retained_context_ranges,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+            )
+            needs_prefill_features = (not skip_prefill_capture) or bool(
+                chunk_retained_ranges
+            )
             prefill_logits, prefill_hidden_states = target_forward_with_hidden_states(
                 target_model,
                 input_ids=chunk_ids,
                 cache=target_cache,
-                capture_layer_ids=capture_layer_ids,
+                capture_layer_ids=(
+                    capture_layer_ids if needs_prefill_features else set()
+                ),
                 skip_logits=not is_last_chunk,
+                force_hidden_state=not needs_prefill_features and not is_last_chunk,
             )
             if prefill_logits is not None:
                 _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
             else:
                 mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
+            if not needs_prefill_features:
+                del prefill_hidden_states
+                _pre_yield = time.perf_counter_ns()
+                yield {
+                    "event": "prefill_progress",
+                    "tokens_processed": chunk_end,
+                    "tokens_total": prompt_len,
+                    "prefill_step_size": int(prefill_step_size),
+                }
+                _yield_pause_ns += time.perf_counter_ns() - _pre_yield
+                continue
             feat = extract_context_feature_from_dict(
                 prefill_hidden_states,
                 target_layer_id_list,
             )
-            if target_hidden is None:
-                target_hidden = mx.zeros(
-                    (feat.shape[0], prompt_len, feat.shape[-1]),
-                    dtype=feat.dtype,
-                )
-            target_hidden[:, chunk_start:chunk_end, :] = feat
-            mx.eval(target_hidden)
+            if prefill_fastpath:
+                projected_segments = []
+                for retain_start, retain_end in chunk_retained_ranges:
+                    local_start = retain_start - chunk_start
+                    local_end = retain_end - chunk_start
+                    projected = _project_target_feature_for_draft(
+                        draft_model,
+                        feat[:, local_start:local_end, :],
+                    )
+                    retained_context_segments.append((projected, retain_start))
+                    projected_segments.append(projected)
+                if projected_segments:
+                    mx.eval(*projected_segments)
+            else:
+                target_hidden_chunks.append(mx.contiguous(feat))
+                mx.eval(target_hidden_chunks[-1])
             del feat, prefill_hidden_states
             _pre_yield = time.perf_counter_ns()
             yield {
@@ -1662,6 +1882,26 @@ def stream_dflash_generate(
                 "prefill_step_size": int(prefill_step_size),
             }
             _yield_pause_ns += time.perf_counter_ns() - _pre_yield
+        if prefill_fastpath:
+            draft_model.prefill_context_cache(
+                target_hidden_segments=retained_context_segments,
+                cache=draft_cache,
+                total_context_len=prompt_len,
+            )
+            draft_cache_arrays = _draft_cache_arrays(draft_cache)
+            if draft_cache_arrays:
+                mx.eval(*draft_cache_arrays)
+            target_hidden = _empty_projected_target_hidden(draft_model)
+            target_hidden_is_projected = True
+        elif target_hidden is None:
+            if target_hidden_chunks:
+                target_hidden = mx.concatenate(target_hidden_chunks, axis=1)
+                mx.eval(target_hidden)
+            else:
+                target_hidden = mx.zeros(
+                    (1, 0, int(draft_model.args.hidden_size)),
+                    dtype=_draft_hidden_dtype(draft_model),
+                )
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
@@ -1704,6 +1944,13 @@ def stream_dflash_generate(
             int(draft_model.mask_token_id),
             dtype=mx.uint32,
         )
+        mask_embedding_tail = (
+            _target_embed_tokens(target_model)(mask_token_tail[None])
+            if int(mask_token_tail.shape[0]) > 0
+            else None
+        )
+        if mask_embedding_tail is not None:
+            mx.eval(mask_embedding_tail)
         generated_token_ids: list[int] = []
         accepted_from_draft = 0
         cycles_completed = 0
@@ -1755,8 +2002,10 @@ def stream_dflash_generate(
                         draft_cache=draft_cache,
                         staged_first=current_staged_first,
                         target_hidden=target_hidden,
+                        target_hidden_is_projected=target_hidden_is_projected,
                         block_len=block_len,
                         mask_token_tail=mask_token_tail,
+                        mask_embedding_tail=mask_embedding_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=False,
                     )
@@ -1776,8 +2025,10 @@ def stream_dflash_generate(
                             draft_cache=draft_cache,
                             staged_first=current_staged_first,
                             target_hidden=target_hidden,
+                            target_hidden_is_projected=target_hidden_is_projected,
                             block_len=block_len,
                             mask_token_tail=mask_token_tail,
+                            mask_embedding_tail=mask_embedding_tail,
                             suppress_token_mask=suppress_token_mask,
                             async_launch=True,
                         )
@@ -1829,6 +2080,11 @@ def stream_dflash_generate(
                 verify_hidden_states,
                 target_layer_id_list,
             )[:, : (1 + acceptance_len), :]
+            if target_hidden_is_projected:
+                committed_hidden = _project_target_feature_for_draft(
+                    draft_model,
+                    committed_hidden,
+                )
             if profile_cycles:
                 mx.eval(committed_hidden, posterior)
             else:
@@ -1865,8 +2121,10 @@ def stream_dflash_generate(
                         draft_cache=draft_cache,
                         staged_first=staged_first_next,
                         target_hidden=committed_hidden,
+                        target_hidden_is_projected=target_hidden_is_projected,
                         block_len=next_block_len,
                         mask_token_tail=mask_token_tail,
+                        mask_embedding_tail=mask_embedding_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=True,
                     )
@@ -1974,6 +2232,9 @@ def stream_dflash_generate(
             },
             "verify_len_cap": int(verify_len_cap),
             "speculative_linear_cache": bool(use_speculative_linear_cache),
+            "prefill_cache_fastpath": bool(prefill_fastpath),
+            "prefill_skip_capture": bool(skip_prefill_capture),
+            "prefill_context_tokens": int(retained_context_tokens),
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "quantize_kv_cache": bool(quantize_kv_cache),
             "prefill_step_size": int(prefill_step_size),
