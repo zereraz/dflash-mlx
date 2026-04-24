@@ -51,7 +51,7 @@ def _read_project_version() -> str:
 
 class DFlashModelProvider(mlx_server.ModelProvider):
     def load(self, model_path, adapter_path=None, draft_model_path=None):
-        requested_model = self.default_model_map.get(model_path, model_path)
+        requested_model = self._model_map.get(model_path, model_path)
         if self.cli_args.model is not None:
             model_ref = self.cli_args.model
         elif requested_model == "default_model":
@@ -80,6 +80,7 @@ class DFlashModelProvider(mlx_server.ModelProvider):
         model, tokenizer, draft_model, resolved_draft_ref = load_runtime_components(
             model_ref=model_ref,
             draft_ref=draft_ref,
+            quantize_kv_cache=getattr(self.cli_args, "quantize_kv_cache", False),
         )
 
         if self.cli_args.chat_template:
@@ -230,6 +231,8 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 use_chat_template=False,
                 stop_token_ids=stop_token_ids,
                 prompt_tokens_override=prompt,
+                quantize_kv_cache=getattr(self.model_provider.cli_args, "quantize_kv_cache", False),
+                prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 512),
             )
 
             try:
@@ -416,11 +419,11 @@ def _print_startup_banner(
     if model_provider.model_key is not None:
         target_ref = model_provider.model_key[0]
         draft_ref = model_provider.model_key[2]
-    target_ref = target_ref or model_provider.cli_args.model or "unknown"
+    target_ref = target_ref or model_provider.cli_args.model or "(lazy — provide via HTTP)"
     if not draft_ref:
-        raise RuntimeError("DFlash server requires a resolved draft model before startup.")
-
-    if model_provider.cli_args.draft_model:
+        draft_ref = model_provider.cli_args.draft_model or "(lazy — resolved on first request)"
+        draft_suffix = ""
+    elif model_provider.cli_args.draft_model:
         draft_suffix = " (explicit)"
     else:
         draft_suffix = " (auto-detected)"
@@ -455,6 +458,8 @@ def _print_startup_banner(
 
 def _run_with_dflash_server(host: str, port: int, model_provider: DFlashModelProvider):
     group = mx.distributed.init()
+    if model_provider.cli_args.model is not None:
+        model_provider.load("default_model", None, "default_model")
     prompt_cache = mlx_server.LRUPromptCache(model_provider.cli_args.prompt_cache_size)
     response_generator = DFlashResponseGenerator(model_provider, prompt_cache)
     if group.rank() == 0:
@@ -598,8 +603,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=2048,
+        default=512,
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--quantize-kv-cache",
+        action="store_true",
+        help="Quantize KV cache to 8-bit (reduces memory for long contexts)",
     )
     parser.add_argument(
         "--prompt-cache-size",

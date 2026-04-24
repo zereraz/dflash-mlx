@@ -92,6 +92,7 @@ def load_runtime_components(
     *,
     model_ref: str,
     draft_ref: Optional[str],
+    quantize_kv_cache: bool = False,
 ):
     resolved_draft_ref = resolve_optional_draft_ref(model_ref, draft_ref)
     if not resolved_draft_ref:
@@ -100,7 +101,7 @@ def load_runtime_components(
             f"Use --draft to specify one, or check https://huggingface.co/z-lab for available drafts.\n"
             f"Supported base models: {_supported_base_models()}"
         )
-    target_model, tokenizer, _ = load_target_bundle(model_ref, lazy=True)
+    target_model, tokenizer, _ = load_target_bundle(model_ref, lazy=True, quantize_kv_cache=quantize_kv_cache)
     try:
         draft_model, _ = load_draft_bundle(resolved_draft_ref, lazy=True)
     except Exception as exc:
@@ -117,10 +118,14 @@ def run_generate(
     max_tokens: int,
     use_chat_template: bool,
     draft_ref: Optional[str],
+    quantize_kv_cache: bool = False,
+    prefill_step_size: int = 512,
 ) -> int:
+    prefill_step_size = max(1, int(prefill_step_size))
     target_model, tokenizer, draft_model, _ = load_runtime_components(
         model_ref=model_ref,
         draft_ref=draft_ref,
+        quantize_kv_cache=quantize_kv_cache,
     )
     stop_token_ids = get_stop_token_ids(tokenizer)
     stream = stream_dflash_generate(
@@ -131,6 +136,8 @@ def run_generate(
         max_new_tokens=max_tokens,
         use_chat_template=use_chat_template,
         stop_token_ids=stop_token_ids,
+        quantize_kv_cache=quantize_kv_cache,
+        prefill_step_size=prefill_step_size,
     )
 
     summary: Optional[dict[str, Any]] = None
@@ -164,6 +171,17 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--draft", default=None, help="Optional draft model override.")
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=512,
+        help="Target prefill chunk size for DFlash hidden-state capture.",
+    )
+    parser.add_argument(
+        "--quantize-kv-cache",
+        action="store_true",
+        help="Quantize target full-attention KV cache to 8-bit.",
+    )
     args = parser.parse_args()
     raise SystemExit(
         run_generate(
@@ -172,6 +190,8 @@ def main() -> None:
             max_tokens=args.max_tokens,
             use_chat_template=not args.no_chat_template,
             draft_ref=args.draft,
+            quantize_kv_cache=args.quantize_kv_cache,
+            prefill_step_size=args.prefill_step_size,
         )
     )
 

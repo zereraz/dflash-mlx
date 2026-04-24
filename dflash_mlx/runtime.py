@@ -394,13 +394,13 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
                 strict=True,
             )
         ]
-
-        state = cache[1]
         inv_scale = k.shape[-1] ** -0.5
         q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
         k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
         g = gated_delta_mod.compute_g(self.A_log, a, self.dt_bias)
         beta = mx.sigmoid(b)
+
+        state = cache[1]
 
         if state is None:
             _, _, h_k, d_k = q.shape
@@ -783,7 +783,8 @@ def target_forward_with_hidden_states(
     cache: Optional[list[Any]] = None,
     input_embeddings: Optional[mx.array] = None,
     capture_layer_ids: Optional[set[int]] = None,
-) -> tuple[mx.array, list[mx.array] | dict[int, mx.array]]:
+    skip_logits: bool = False,
+) -> tuple[Optional[mx.array], list[mx.array] | dict[int, mx.array]]:
     inner = _target_text_model(target_model)
     hidden_states = input_embeddings if input_embeddings is not None else inner.embed_tokens(input_ids)
     if cache is None:
@@ -816,6 +817,8 @@ def target_forward_with_hidden_states(
                 captured.append(h)
             elif capture_layer_ids is not None and capture_key in capture_layer_ids:
                 captured[capture_key] = h
+    if skip_logits:
+        return None, captured
     normalized = inner.norm(h)
     logits = _lm_head_logits(target_model, normalized)
     return logits, captured
@@ -1138,6 +1141,7 @@ def generate_dflash_once(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    prefill_step_size: int = 512,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
@@ -1218,19 +1222,24 @@ def generate_dflash_once(
     try:
         start_ns = time.perf_counter_ns()
         prefill_start_ns = time.perf_counter_ns()
-        prefill_step_size = 2048
+        prefill_step_size = max(1, int(prefill_step_size))
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
         for chunk_start in range(0, prompt_len, prefill_step_size):
             chunk_end = min(chunk_start + prefill_step_size, prompt_len)
             chunk_ids = prompt_array[:, chunk_start:chunk_end]
+            is_last_chunk = (chunk_end >= prompt_len)
             prefill_logits, prefill_hidden_states = target_forward_with_hidden_states(
                 target_model,
                 input_ids=chunk_ids,
                 cache=target_cache,
                 capture_layer_ids=capture_layer_ids,
+                skip_logits=not is_last_chunk,
             )
-            _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+            if prefill_logits is not None:
+                _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+            else:
+                mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
             feat = extract_context_feature_from_dict(
                 prefill_hidden_states,
                 target_layer_id_list,
@@ -1524,6 +1533,7 @@ def generate_dflash_once(
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "verify_len_cap": int(verify_len_cap),
             "quantize_kv_cache": bool(quantize_kv_cache),
+            "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
             "acceptance_history": list(acceptance_history),
             "acceptance_first_20_avg": (sum(first_20) / len(first_20)) if first_20 else 0.0,
@@ -1556,6 +1566,7 @@ def stream_dflash_generate(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    prefill_step_size: int = 512,
 ) -> Iterator[dict[str, Any]]:
     if quantize_kv_cache:
         configure_full_attention_split(target_model, enabled=False)
@@ -1613,19 +1624,24 @@ def stream_dflash_generate(
         start_ns = time.perf_counter_ns()
         _yield_pause_ns = 0
         prefill_start_ns = time.perf_counter_ns()
-        prefill_step_size = 2048
+        prefill_step_size = max(1, int(prefill_step_size))
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
         for chunk_start in range(0, prompt_len, prefill_step_size):
             chunk_end = min(chunk_start + prefill_step_size, prompt_len)
             chunk_ids = prompt_array[:, chunk_start:chunk_end]
+            is_last_chunk = (chunk_end >= prompt_len)
             prefill_logits, prefill_hidden_states = target_forward_with_hidden_states(
                 target_model,
                 input_ids=chunk_ids,
                 cache=target_cache,
                 capture_layer_ids=capture_layer_ids,
+                skip_logits=not is_last_chunk,
             )
-            _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+            if prefill_logits is not None:
+                _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+            else:
+                mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
             feat = extract_context_feature_from_dict(
                 prefill_hidden_states,
                 target_layer_id_list,
@@ -1643,6 +1659,7 @@ def stream_dflash_generate(
                 "event": "prefill_progress",
                 "tokens_processed": chunk_end,
                 "tokens_total": prompt_len,
+                "prefill_step_size": int(prefill_step_size),
             }
             _yield_pause_ns += time.perf_counter_ns() - _pre_yield
         if hasattr(mx, "clear_cache"):
@@ -1657,6 +1674,7 @@ def stream_dflash_generate(
             "event": "prefill",
             "prefill_us": prefill_ns / 1_000.0,
             "prompt_token_count": prompt_len,
+            "prefill_step_size": int(prefill_step_size),
         }
         _yield_pause_ns += time.perf_counter_ns() - _pre_yield
 
@@ -1958,6 +1976,7 @@ def stream_dflash_generate(
             "speculative_linear_cache": bool(use_speculative_linear_cache),
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "quantize_kv_cache": bool(quantize_kv_cache),
+            "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
             "acceptance_history": list(acceptance_history),
             "acceptance_first_20_avg": (sum(first_20) / len(first_20)) if first_20 else 0.0,

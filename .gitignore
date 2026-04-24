@@ -16,6 +16,8 @@ AGENTS.md
 CLAUDE.md
 ACTIVE.md
 benchmark/datasets/
+eval/results/
+eval/results_*.json
 bench-results/
 bench/
 *.private.json

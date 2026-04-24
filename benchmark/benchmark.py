@@ -141,6 +141,8 @@ def _build_config(
     prompt_tokens: int,
     max_new_tokens: int,
     block_tokens: int,
+    prefill_step_size: int,
+    quantize_kv_cache: bool,
     repeat: int,
     cooldown: int,
     target_model: str,
@@ -151,6 +153,8 @@ def _build_config(
         "draft_model": draft_model,
         "max_new_tokens": int(max_new_tokens),
         "block_tokens": int(block_tokens),
+        "prefill_step_size": int(prefill_step_size),
+        "quantize_kv_cache": bool(quantize_kv_cache),
         "cooldown": int(cooldown),
         "prompt": prompt,
         "prompt_tokens": int(prompt_tokens),
@@ -169,6 +173,8 @@ def _build_single_case_report(
     runs: list[dict[str, Any]],
     target_model: str,
     draft_model: str,
+    prefill_step_size: int,
+    quantize_kv_cache: bool,
 ) -> dict[str, Any]:
     run_entries = [_format_run_entry(run) for run in runs]
     baseline_tps_values = [float(run["baseline_generation_tps"]) for run in runs]
@@ -188,6 +194,8 @@ def _build_single_case_report(
             prompt_tokens=prompt_tokens,
             max_new_tokens=max_new_tokens,
             block_tokens=effective_block_tokens,
+            prefill_step_size=prefill_step_size,
+            quantize_kv_cache=quantize_kv_cache,
             repeat=repeat,
             cooldown=cooldown,
             target_model=target_model,
@@ -358,6 +366,8 @@ def _generate_dflash_stream_once(
     stop_token_ids: list[int] | None,
     suppress_token_ids: list[int] | None,
     prompt_tokens_override: list[int] | None = None,
+    quantize_kv_cache: bool = False,
+    prefill_step_size: int = 512,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
@@ -380,6 +390,8 @@ def _generate_dflash_stream_once(
         stop_token_ids=stop_token_ids,
         suppress_token_ids=suppress_token_ids,
         prompt_tokens_override=prompt_tokens_override,
+        quantize_kv_cache=quantize_kv_cache,
+        prefill_step_size=prefill_step_size,
     )
     try:
         for event in stream:
@@ -427,8 +439,10 @@ def _run_once_sequential(
     target_model_ref: str | None,
     draft_model_ref: str | None,
     quantize_draft: bool,
+    quantize_kv_cache: bool,
     no_eos: bool,
     split_sdpa: bool,
+    prefill_step_size: int,
 ) -> dict[str, Any]:
     pristine_target_model, pristine_tokenizer, pristine_meta = _load_pristine_target_bundle(
         target_model_ref
@@ -464,6 +478,7 @@ def _run_once_sequential(
         target_model_ref,
         lazy=True,
         split_full_attention_sdpa=split_sdpa,
+        quantize_kv_cache=quantize_kv_cache,
     )
     draft_model, draft_meta = load_draft_bundle(
         draft_model_ref,
@@ -501,6 +516,8 @@ def _run_once_sequential(
             stop_token_ids=dflash_stop_token_ids,
             suppress_token_ids=dflash_suppress_token_ids,
             prompt_tokens_override=prompt_tokens,
+            quantize_kv_cache=quantize_kv_cache,
+            prefill_step_size=prefill_step_size,
         )
     finally:
         del target_model
@@ -541,10 +558,13 @@ def benchmark_once(
     target_model_ref: str | None,
     draft_model_ref: str | None,
     quantize_draft: bool = False,
+    quantize_kv_cache: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
+    prefill_step_size: int = 512,
     cooldown: int = 10,
 ) -> dict[str, Any]:
+    prefill_step_size = max(1, int(prefill_step_size))
     thermal_pressure = _get_thermal_pressure()
     _warn_if_throttled(thermal_pressure)
     result = _run_once_sequential(
@@ -556,8 +576,10 @@ def benchmark_once(
         target_model_ref=target_model_ref,
         draft_model_ref=draft_model_ref,
         quantize_draft=quantize_draft,
+        quantize_kv_cache=quantize_kv_cache,
         no_eos=no_eos,
         split_sdpa=split_sdpa,
+        prefill_step_size=prefill_step_size,
     )
     target_meta = result.pop("target_meta")
     draft_meta = result.pop("draft_meta")
@@ -572,6 +594,8 @@ def benchmark_once(
         runs=[result],
         target_model=target_meta["resolved_model_ref"],
         draft_model=draft_meta["resolved_model_ref"],
+        prefill_step_size=prefill_step_size,
+        quantize_kv_cache=quantize_kv_cache,
     )
 
 
@@ -586,10 +610,13 @@ def benchmark_matrix(
     target_model_ref: str | None = None,
     draft_model_ref: str | None = None,
     quantize_draft: bool = False,
+    quantize_kv_cache: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
+    prefill_step_size: int = 512,
     cooldown: int = 10,
 ) -> dict[str, Any]:
+    prefill_step_size = max(1, int(prefill_step_size))
     target_meta: dict[str, Any] | None = None
     draft_meta: dict[str, Any] | None = None
     if len(prompts) != 1 or len(schedules) != 1:
@@ -610,8 +637,10 @@ def benchmark_matrix(
             target_model_ref=target_model_ref,
             draft_model_ref=draft_model_ref,
             quantize_draft=quantize_draft,
+            quantize_kv_cache=quantize_kv_cache,
             no_eos=no_eos,
             split_sdpa=split_sdpa,
+            prefill_step_size=prefill_step_size,
         )
         if target_meta is None:
             target_meta = run.pop("target_meta")
@@ -636,6 +665,8 @@ def benchmark_matrix(
         runs=runs,
         target_model=target_meta["resolved_model_ref"] if target_meta is not None else "",
         draft_model=draft_meta["resolved_model_ref"] if draft_meta is not None else "",
+        prefill_step_size=prefill_step_size,
+        quantize_kv_cache=quantize_kv_cache,
     )
 
 
@@ -665,6 +696,17 @@ def main() -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--draft", default=None)
     parser.add_argument("--quantize-draft", action="store_true")
+    parser.add_argument(
+        "--quantize-kv-cache",
+        action="store_true",
+        help="Quantize target full-attention KV cache to 8-bit during DFlash runs.",
+    )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=512,
+        help="Target prefill chunk size for DFlash hidden-state capture.",
+    )
     parser.add_argument("--no-eos", action="store_true")
     parser.add_argument(
         "--split-sdpa",
@@ -684,8 +726,10 @@ def main() -> None:
         "target_model_ref": args.model,
         "draft_model_ref": args.draft,
         "quantize_draft": args.quantize_draft,
+        "quantize_kv_cache": args.quantize_kv_cache,
         "no_eos": args.no_eos,
         "split_sdpa": args.split_sdpa,
+        "prefill_step_size": args.prefill_step_size,
         "cooldown": args.cooldown,
     }
     if args.matrix or repeat > 1:
