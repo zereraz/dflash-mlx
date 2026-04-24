@@ -95,7 +95,15 @@ def generate_baseline(model, tokenizer, prompt: str, max_tokens: int) -> dict:
     }
 
 
-def _run_dflash(target_model, tokenizer, draft_model, prompt: str, max_tokens: int, quantize_kv: bool = False) -> dict:
+def _run_dflash(
+    target_model,
+    tokenizer,
+    draft_model,
+    prompt: str,
+    max_tokens: int,
+    quantize_kv: bool = False,
+    block_tokens: int | None = None,
+) -> dict:
     from dflash_mlx.runtime import stream_dflash_generate
     from dflash_mlx.generate import get_stop_token_ids
 
@@ -113,6 +121,7 @@ def _run_dflash(target_model, tokenizer, draft_model, prompt: str, max_tokens: i
         use_chat_template=False,
         stop_token_ids=stop_ids,
         quantize_kv_cache=quantize_kv,
+        block_tokens=block_tokens,
     ):
         if event.get("event") == "token":
             if first_token_time is None:
@@ -144,12 +153,28 @@ def _run_dflash(target_model, tokenizer, draft_model, prompt: str, max_tokens: i
     }
 
 
-def generate_dflash(target_model, tokenizer, draft_model, prompt: str, max_tokens: int) -> dict:
-    return _run_dflash(target_model, tokenizer, draft_model, prompt, max_tokens, quantize_kv=False)
+def generate_dflash(target_model, tokenizer, draft_model, prompt: str, max_tokens: int, block_tokens: int | None = None) -> dict:
+    return _run_dflash(
+        target_model,
+        tokenizer,
+        draft_model,
+        prompt,
+        max_tokens,
+        quantize_kv=False,
+        block_tokens=block_tokens,
+    )
 
 
-def generate_dflash_quantized(target_model, tokenizer, draft_model, prompt: str, max_tokens: int) -> dict:
-    return _run_dflash(target_model, tokenizer, draft_model, prompt, max_tokens, quantize_kv=True)
+def generate_dflash_quantized(target_model, tokenizer, draft_model, prompt: str, max_tokens: int, block_tokens: int | None = None) -> dict:
+    return _run_dflash(
+        target_model,
+        tokenizer,
+        draft_model,
+        prompt,
+        max_tokens,
+        quantize_kv=True,
+        block_tokens=block_tokens,
+    )
 
 
 def format_prompt(tokenizer, question: str) -> str:
@@ -165,10 +190,16 @@ def main():
     parser.add_argument("--draft", type=str, default=None, help="Draft model path")
     parser.add_argument("--num-samples", type=int, default=30)
     parser.add_argument("--max-tokens", type=int, default=1024)
+    parser.add_argument("--block-tokens", type=int, default=None)
     parser.add_argument("--modes", type=str, default="baseline,dflash,dflash_qkv",
                         help="Comma-separated: baseline,dflash,dflash_qkv")
     parser.add_argument("--output", type=str, default=None, help="JSON output path")
     args = parser.parse_args()
+
+    if mx.metal.is_available():
+        wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_wired_limit(wired_limit)
+        mx.set_cache_limit(wired_limit // 4)
 
     modes = [m.strip() for m in args.modes.split(",")]
 
@@ -224,9 +255,9 @@ def main():
             if mode == "baseline":
                 r = generate_baseline(baseline_model, baseline_tokenizer, prompt, args.max_tokens)
             elif mode == "dflash":
-                r = generate_dflash(target_model, tokenizer, draft_model, prompt, args.max_tokens)
+                r = generate_dflash(target_model, tokenizer, draft_model, prompt, args.max_tokens, args.block_tokens)
             elif mode == "dflash_qkv":
-                r = generate_dflash_quantized(target_model, tokenizer, draft_model, prompt, args.max_tokens)
+                r = generate_dflash_quantized(target_model, tokenizer, draft_model, prompt, args.max_tokens, args.block_tokens)
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 

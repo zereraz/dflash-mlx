@@ -46,6 +46,8 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "block_tokens": 16,
     },
     "auto_b8": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 8},
+    "auto_b4": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 4},
+    "auto_b12": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 12},
     "argmax_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_LM_HEAD_ARGMAX": "1"},
         "block_tokens": 16,
@@ -192,12 +194,18 @@ def main() -> None:
         default=True,
         help="Enable split full-attention SDPA hooks when loading the target model.",
     )
+    parser.add_argument(
+        "--quantize-kv-cache",
+        action="store_true",
+        help="Use quantized target full-attention KV cache during DFlash runs.",
+    )
     parser.add_argument("--cooldown", type=float, default=0.0)
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_wired_limit(wired_limit)
         mx.set_cache_limit(wired_limit // 4)
 
     if args.profile:
@@ -207,6 +215,7 @@ def main() -> None:
         args.model,
         lazy=True,
         split_full_attention_sdpa=bool(args.split_sdpa),
+        quantize_kv_cache=bool(args.quantize_kv_cache),
     )
     draft_model, _ = load_draft_bundle(args.draft, lazy=True)
     prompt_tokens = _target_prompt_tokens(tokenizer, args.prompt_tokens, args.prompt)
@@ -229,6 +238,7 @@ def main() -> None:
                     use_chat_template=False,
                     block_tokens=int(scenario.get("block_tokens", 16)),
                     prompt_tokens_override=prompt_tokens,
+                    quantize_kv_cache=bool(args.quantize_kv_cache),
                     stop_token_ids=[],
                     prefill_step_size=int(args.prefill_step_size),
                 )
@@ -246,6 +256,7 @@ def main() -> None:
         "prompt_tokens": len(prompt_tokens),
         "max_tokens": int(args.max_tokens),
         "prefill_step_size": int(args.prefill_step_size),
+        "quantize_kv_cache": bool(args.quantize_kv_cache),
         "profile": bool(args.profile),
         "rows": rows,
     }

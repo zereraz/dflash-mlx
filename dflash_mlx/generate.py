@@ -118,6 +118,7 @@ def run_generate(
     max_tokens: int,
     use_chat_template: bool,
     draft_ref: Optional[str],
+    block_tokens: Optional[int] = None,
     quantize_kv_cache: bool = False,
     prefill_step_size: int = 2048,
 ) -> int:
@@ -136,6 +137,7 @@ def run_generate(
         max_new_tokens=max_tokens,
         use_chat_template=use_chat_template,
         stop_token_ids=stop_token_ids,
+        block_tokens=block_tokens,
         quantize_kv_cache=quantize_kv_cache,
         prefill_step_size=prefill_step_size,
     )
@@ -164,11 +166,18 @@ def run_generate(
 def main() -> None:
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_wired_limit(wired_limit)
         mx.set_cache_limit(wired_limit // 4)
     parser = argparse.ArgumentParser(description="Generate text with DFlash on MLX.")
     parser.add_argument("--model", required=True, help="Target model reference.")
     parser.add_argument("--prompt", required=True, help="Prompt to generate from.")
     parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--block-tokens",
+        type=int,
+        default=None,
+        help="Speculative verify block size. Defaults to the draft model block size.",
+    )
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--draft", default=None, help="Optional draft model override.")
     parser.add_argument(
@@ -190,6 +199,7 @@ def main() -> None:
             max_tokens=args.max_tokens,
             use_chat_template=not args.no_chat_template,
             draft_ref=args.draft,
+            block_tokens=args.block_tokens,
             quantize_kv_cache=args.quantize_kv_cache,
             prefill_step_size=args.prefill_step_size,
         )

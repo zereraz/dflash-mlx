@@ -673,6 +673,7 @@ def benchmark_matrix(
 def main() -> None:
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]
+        mx.set_wired_limit(wired_limit)
         mx.set_cache_limit(wired_limit // 4)
     parser = argparse.ArgumentParser(description="Benchmark baseline MLX vs DFlash MLX runtime.")
     parser.add_argument("--prompt", required=True, help="Prompt to benchmark.")

@@ -233,6 +233,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 prompt_tokens_override=prompt,
                 quantize_kv_cache=getattr(self.model_provider.cli_args, "quantize_kv_cache", False),
                 prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 2048),
+                block_tokens=getattr(self.model_provider.cli_args, "block_tokens", None),
             )
 
             try:
@@ -604,6 +605,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prefill-step-size",
         type=int,
         default=2048,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--block-tokens",
+        type=int,
+        default=None,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
