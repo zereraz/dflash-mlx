@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import mlx.core as mx
@@ -408,6 +409,15 @@ def tape_replay_kernel(
 
 
 def _compute_sdpa_2pass_blocks(gqa_factor: int, n_kv: int, device_arch: Optional[str] = None) -> int:
+    override_raw = os.environ.get("DFLASH_SDPA_2PASS_BLOCKS", "").strip()
+    if override_raw:
+        try:
+            override = int(override_raw)
+        except ValueError:
+            override = 0
+        if override > 0:
+            return max(32, (override // 32) * 32)
+
     arch = device_arch or str(mx.device_info().get("architecture", ""))
     devc = arch[-1] if arch else ""
     n_simds = int(gqa_factor)  # Match AR qL=1 dispatch heuristic.

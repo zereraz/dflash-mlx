@@ -42,6 +42,18 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "block_tokens": 16,
     },
     "auto_b8": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 8},
+    "sdpa64_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "64"},
+        "block_tokens": 16,
+    },
+    "sdpa128_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "128"},
+        "block_tokens": 16,
+    },
+    "sdpa256_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "256"},
+        "block_tokens": 16,
+    },
     "fastpath_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_PREFILL_CACHE_FASTPATH": "1"},
         "block_tokens": 16,
