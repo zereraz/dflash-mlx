@@ -1369,17 +1369,20 @@ def generate_dflash_once(
                 skip_logits=not is_last_chunk,
                 force_hidden_state=not needs_prefill_features and not is_last_chunk,
             )
-            if prefill_logits is not None:
-                _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
-            else:
-                mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
             if not needs_prefill_features:
+                if prefill_logits is not None:
+                    _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+                else:
+                    mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
                 del prefill_hidden_states
                 continue
             feat = extract_context_feature_from_dict(
                 prefill_hidden_states,
                 target_layer_id_list,
             )
+            eval_targets: list[mx.array] = []
+            if prefill_logits is not None:
+                eval_targets.append(prefill_logits)
             if prefill_fastpath:
                 projected_segments = []
                 for retain_start, retain_end in chunk_retained_ranges:
@@ -1392,10 +1395,12 @@ def generate_dflash_once(
                     retained_context_segments.append((projected, retain_start))
                     projected_segments.append(projected)
                 if projected_segments:
-                    mx.eval(*projected_segments)
+                    eval_targets.extend(projected_segments)
             else:
                 target_hidden_chunks.append(mx.contiguous(feat))
-                mx.eval(target_hidden_chunks[-1])
+                eval_targets.append(target_hidden_chunks[-1])
+            if eval_targets:
+                mx.eval(*eval_targets)
             del feat, prefill_hidden_states
         if prefill_fastpath:
             draft_model.prefill_context_cache(
@@ -1851,11 +1856,11 @@ def stream_dflash_generate(
                 skip_logits=not is_last_chunk,
                 force_hidden_state=not needs_prefill_features and not is_last_chunk,
             )
-            if prefill_logits is not None:
-                _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
-            else:
-                mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
             if not needs_prefill_features:
+                if prefill_logits is not None:
+                    _eval_logits_and_captured(prefill_logits, prefill_hidden_states)
+                else:
+                    mx.eval(*prefill_hidden_states.values()) if isinstance(prefill_hidden_states, dict) else mx.eval(*prefill_hidden_states)
                 del prefill_hidden_states
                 _pre_yield = time.perf_counter_ns()
                 yield {
@@ -1870,6 +1875,9 @@ def stream_dflash_generate(
                 prefill_hidden_states,
                 target_layer_id_list,
             )
+            eval_targets: list[mx.array] = []
+            if prefill_logits is not None:
+                eval_targets.append(prefill_logits)
             if prefill_fastpath:
                 projected_segments = []
                 for retain_start, retain_end in chunk_retained_ranges:
@@ -1882,10 +1890,12 @@ def stream_dflash_generate(
                     retained_context_segments.append((projected, retain_start))
                     projected_segments.append(projected)
                 if projected_segments:
-                    mx.eval(*projected_segments)
+                    eval_targets.extend(projected_segments)
             else:
                 target_hidden_chunks.append(mx.contiguous(feat))
-                mx.eval(target_hidden_chunks[-1])
+                eval_targets.append(target_hidden_chunks[-1])
+            if eval_targets:
+                mx.eval(*eval_targets)
             del feat, prefill_hidden_states
             _pre_yield = time.perf_counter_ns()
             yield {
