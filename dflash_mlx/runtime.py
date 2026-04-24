@@ -222,6 +222,11 @@ def _profile_dflash_cycles_enabled() -> bool:
     return raw not in {"", "0", "false", "no"}
 
 
+def _fused_gdn_prep_enabled() -> bool:
+    raw = os.environ.get("DFLASH_FUSED_GDN_PREP", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
 def _ns_to_us(ns: int | float) -> float:
     return float(ns) / 1_000.0
 
@@ -354,7 +359,12 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
-        if not isinstance(cache, RecurrentRollbackCache) or not getattr(cache, "_armed", False):
+        if not isinstance(cache, RecurrentRollbackCache):
+            return original_call(self, inputs, mask=mask, cache=cache)
+
+        armed = bool(getattr(cache, "_armed", False))
+        use_fused_gdn_prep = _fused_gdn_prep_enabled()
+        if not armed and not use_fused_gdn_prep:
             return original_call(self, inputs, mask=mask, cache=cache)
 
         from mlx.nn.layers.distributed import sum_gradients
@@ -382,23 +392,45 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
         if mask is not None:
             qkv = mx.where(mask[..., None], qkv, 0)
         conv_input = mx.concatenate([conv_state, qkv], axis=1)
-        cache[0] = conv_input[:, -(self.conv_kernel_size - 1) :]
+        n_keep = self.conv_kernel_size - 1
+        if cache.lengths is not None:
+            ends = mx.clip(cache.lengths, 0, S)
+            positions = (ends[:, None] + mx.arange(n_keep))[..., None]
+            cache[0] = mx.take_along_axis(conv_input, positions, axis=1)
+        else:
+            cache[0] = mx.contiguous(conv_input[:, -n_keep:, :])
         conv_out = nn.silu(self.conv1d(conv_input))
 
-        q, k, v = [
-            tensor.reshape(B, S, heads, dim)
-            for tensor, heads, dim in zip(
-                mx.split(conv_out, [self.key_dim, 2 * self.key_dim], -1),
-                [self.num_k_heads, self.num_k_heads, self.num_v_heads],
-                [self.head_k_dim, self.head_k_dim, self.head_v_dim],
-                strict=True,
+        if use_fused_gdn_prep:
+            from dflash_mlx.kernels import gdn_post_conv_prep
+
+            q, k, v, g, beta = gdn_post_conv_prep(
+                conv_out,
+                a,
+                b,
+                self.A_log,
+                self.dt_bias,
+                num_k_heads=self.num_k_heads,
+                head_k_dim=self.head_k_dim,
+                num_v_heads=self.num_v_heads,
+                head_v_dim=self.head_v_dim,
+                use_kernel=True,
             )
-        ]
-        inv_scale = k.shape[-1] ** -0.5
-        q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
-        k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
-        g = gated_delta_mod.compute_g(self.A_log, a, self.dt_bias)
-        beta = mx.sigmoid(b)
+        else:
+            q, k, v = [
+                tensor.reshape(B, S, heads, dim)
+                for tensor, heads, dim in zip(
+                    mx.split(conv_out, [self.key_dim, 2 * self.key_dim], -1),
+                    [self.num_k_heads, self.num_k_heads, self.num_v_heads],
+                    [self.head_k_dim, self.head_k_dim, self.head_v_dim],
+                    strict=True,
+                )
+            ]
+            inv_scale = k.shape[-1] ** -0.5
+            q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
+            k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
+            g = gated_delta_mod.compute_g(self.A_log, a, self.dt_bias)
+            beta = mx.sigmoid(b)
 
         state = cache[1]
 
@@ -413,7 +445,7 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
             and mx.metal.is_available()
             and not self.training
         ):
-            if getattr(cache, "_armed", False):
+            if armed:
                 from dflash_mlx.kernels import gated_delta_kernel_with_tape
 
                 out, state, innovation_tape = gated_delta_kernel_with_tape(
@@ -429,7 +461,7 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
                 out, state = gated_delta_mod.gated_delta_kernel(q, k, v, g, beta, state, mask)
         else:
             out, state = gated_delta_mod.gated_delta_ops(q, k, v, g, beta, state, mask)
-            if getattr(cache, "_armed", False):
+            if armed:
                 decay = g[..., None, :] if g.ndim == 4 else g[..., None, None]
                 decayed_state = state_in[:, None, ...] * decay
                 kv_mem = (decayed_state * k[..., None, :]).sum(axis=-1)
@@ -442,6 +474,8 @@ def _install_speculative_linear_cache_hook(linear_attn: Any) -> None:
                 )
 
         cache[1] = state
+        if not armed:
+            cache.advance(S)
         out = self.norm(out, z)
         out_flat = out.reshape(B, S, -1)
         out = self.out_proj(out_flat)

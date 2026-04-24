@@ -9,6 +9,216 @@ from typing import Optional
 import mlx.core as mx
 
 
+def _make_gdn_post_conv_prep_kernel():
+    if not mx.metal.is_available():
+        return None
+
+    source = """
+        auto token_idx = thread_position_in_grid.z;
+        auto b_idx = token_idx / T;
+        auto t_idx = token_idx - b_idx * T;
+        auto head_idx = thread_position_in_grid.y;
+        auto lane = thread_position_in_threadgroup.x;
+
+        constexpr int qk_per_thread = Dk / 32;
+        constexpr int v_per_thread = Dv / 32;
+        constexpr int C = 2 * H * Dk + Hv * Dv;
+
+        auto x_base = mixed_qkv + (b_idx * T + t_idx) * C;
+
+        if (head_idx < H) {
+            auto h = head_idx;
+            auto q_in = x_base + h * Dk;
+            auto k_in = x_base + H * Dk + h * Dk;
+            auto q_out = q + ((b_idx * T + t_idx) * H + h) * Dk;
+            auto k_out = k + ((b_idx * T + t_idx) * H + h) * Dk;
+
+            float q_vals[qk_per_thread];
+            float k_vals[qk_per_thread];
+            float q_sum = 0.0f;
+            float k_sum = 0.0f;
+
+            for (int i = 0; i < qk_per_thread; ++i) {
+                auto d = lane * qk_per_thread + i;
+                float qv = static_cast<float>(q_in[d]);
+                float kv = static_cast<float>(k_in[d]);
+                q_vals[i] = qv;
+                k_vals[i] = kv;
+                q_sum += qv * qv;
+                k_sum += kv * kv;
+            }
+
+            q_sum = simd_sum(q_sum);
+            k_sum = simd_sum(k_sum);
+            float eps = static_cast<float>(Dk) * 1.0e-6f;
+            float inv_sqrt_d = 1.0f / metal::precise::sqrt(static_cast<float>(Dk));
+            float q_scale = inv_sqrt_d / metal::precise::sqrt(q_sum + eps);
+            float k_scale = 1.0f / metal::precise::sqrt(k_sum + eps);
+
+            for (int i = 0; i < qk_per_thread; ++i) {
+                auto d = lane * qk_per_thread + i;
+                q_out[d] = static_cast<InT>(q_vals[i] * q_scale);
+                k_out[d] = static_cast<InT>(k_vals[i] * k_scale);
+            }
+        } else {
+            auto hv = head_idx - H;
+            auto v_in = x_base + 2 * H * Dk + hv * Dv;
+            auto v_out = v + ((b_idx * T + t_idx) * Hv + hv) * Dv;
+
+            for (int i = 0; i < v_per_thread; ++i) {
+                auto d = lane * v_per_thread + i;
+                v_out[d] = v_in[d];
+            }
+
+            if (lane == 0) {
+                auto gate_offset = (b_idx * T + t_idx) * Hv + hv;
+                float a_val = static_cast<float>(a[gate_offset]);
+                float b_val = static_cast<float>(b_gate[gate_offset]);
+                float dt = static_cast<float>(dt_bias[hv]);
+                float a_log = static_cast<float>(A_log[hv]);
+
+                float x = a_val + dt;
+                float sp = x > 20.0f
+                    ? x
+                    : (x > 0.0f
+                        ? x + metal::precise::log(1.0f + metal::precise::exp(-x))
+                        : metal::precise::log(1.0f + metal::precise::exp(x)));
+                g[gate_offset] = metal::precise::exp(-metal::precise::exp(a_log) * sp);
+                beta[gate_offset] = static_cast<InT>(
+                    1.0f / (1.0f + metal::precise::exp(-b_val))
+                );
+            }
+        }
+    """
+
+    return mx.fast.metal_kernel(
+        name="gdn_post_conv_prep",
+        input_names=["mixed_qkv", "a", "b_gate", "A_log", "dt_bias", "T"],
+        output_names=["q", "k", "v", "g", "beta"],
+        source=source,
+    )
+
+
+_gdn_post_conv_prep_kernel = _make_gdn_post_conv_prep_kernel()
+
+
+def _softplus(x: mx.array) -> mx.array:
+    return mx.maximum(x, 0) + mx.log(1 + mx.exp(-mx.abs(x)))
+
+
+def _gdn_post_conv_prep_ops(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    A_log: mx.array,
+    dt_bias: mx.array,
+    *,
+    num_k_heads: int,
+    head_k_dim: int,
+    num_v_heads: int,
+    head_v_dim: int,
+) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+    batch_size, steps, _ = conv_out.shape
+    q, k, v = [
+        tensor.reshape(batch_size, steps, heads, dim)
+        for tensor, heads, dim in zip(
+            mx.split(conv_out, [num_k_heads * head_k_dim, 2 * num_k_heads * head_k_dim], -1),
+            [num_k_heads, num_k_heads, num_v_heads],
+            [head_k_dim, head_k_dim, head_v_dim],
+            strict=True,
+        )
+    ]
+    inv_scale = head_k_dim ** -0.5
+    q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
+    k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
+    g = mx.exp(-mx.exp(A_log.astype(mx.float32)) * _softplus(a + dt_bias))
+    beta = mx.sigmoid(b)
+    return q, k, v, g, beta
+
+
+def gdn_post_conv_prep(
+    conv_out: mx.array,
+    a: mx.array,
+    b: mx.array,
+    A_log: mx.array,
+    dt_bias: mx.array,
+    *,
+    num_k_heads: int,
+    head_k_dim: int,
+    num_v_heads: int,
+    head_v_dim: int,
+    use_kernel: bool,
+) -> tuple[mx.array, mx.array, mx.array, mx.array, mx.array]:
+    batch_size, steps, conv_dim = conv_out.shape
+    num_k_heads = int(num_k_heads)
+    head_k_dim = int(head_k_dim)
+    num_v_heads = int(num_v_heads)
+    head_v_dim = int(head_v_dim)
+    expected_gate_shape = (batch_size, steps, num_v_heads)
+    expected_dim = 2 * num_k_heads * head_k_dim + num_v_heads * head_v_dim
+    if conv_dim != expected_dim:
+        raise ValueError(f"GDN conv dim mismatch: got {conv_dim}, expected {expected_dim}")
+    if a.shape != expected_gate_shape:
+        raise ValueError(f"GDN a shape mismatch: got {a.shape}, expected {expected_gate_shape}")
+    if b.shape != expected_gate_shape:
+        raise ValueError(f"GDN b shape mismatch: got {b.shape}, expected {expected_gate_shape}")
+    if A_log.shape != (num_v_heads,):
+        raise ValueError(f"GDN A_log shape mismatch: got {A_log.shape}, expected {(num_v_heads,)}")
+    if dt_bias.shape != (num_v_heads,):
+        raise ValueError(f"GDN dt_bias shape mismatch: got {dt_bias.shape}, expected {(num_v_heads,)}")
+
+    if (
+        not use_kernel
+        or _gdn_post_conv_prep_kernel is None
+        or not mx.metal.is_available()
+        or mx.default_device() != mx.gpu
+        or conv_out.dtype not in (mx.float16, mx.bfloat16)
+        or head_k_dim < 32
+        or head_v_dim < 32
+        or head_k_dim % 32 != 0
+        or head_v_dim % 32 != 0
+    ):
+        return _gdn_post_conv_prep_ops(
+            conv_out,
+            a,
+            b,
+            A_log,
+            dt_bias,
+            num_k_heads=num_k_heads,
+            head_k_dim=head_k_dim,
+            num_v_heads=num_v_heads,
+            head_v_dim=head_v_dim,
+        )
+
+    conv_out = mx.contiguous(conv_out)
+    a = mx.contiguous(a)
+    b = mx.contiguous(b)
+    A_log = mx.contiguous(A_log)
+    dt_bias = mx.contiguous(dt_bias)
+    input_type = conv_out.dtype
+    q, k, v, g, beta = _gdn_post_conv_prep_kernel(
+        inputs=[conv_out, a, b, A_log, dt_bias, steps],
+        template=[
+            ("InT", input_type),
+            ("H", num_k_heads),
+            ("Hv", num_v_heads),
+            ("Dk", head_k_dim),
+            ("Dv", head_v_dim),
+        ],
+        grid=(32, num_k_heads + num_v_heads, batch_size * steps),
+        threadgroup=(32, 4, 1),
+        output_shapes=[
+            (batch_size, steps, num_k_heads, head_k_dim),
+            (batch_size, steps, num_k_heads, head_k_dim),
+            (batch_size, steps, num_v_heads, head_v_dim),
+            (batch_size, steps, num_v_heads),
+            (batch_size, steps, num_v_heads),
+        ],
+        output_dtypes=[input_type, input_type, input_type, mx.float32, input_type],
+    )
+    return q, k, v, g, beta
+
+
 def _make_gated_delta_kernel_with_tape(*, has_mask: bool = False, vectorized: bool = False):
     if not mx.metal.is_available():
         return None
