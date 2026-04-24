@@ -24,6 +24,10 @@ DEFAULT_PROMPT = (
 
 SCENARIOS: dict[str, dict[str, Any]] = {
     "auto_b16": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 16},
+    "full_logits_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_LM_HEAD_ARGMAX": "0"},
+        "block_tokens": 16,
+    },
     "auto_kp4_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_VERIFY_AUTO_KPARTS": "4"},
         "block_tokens": 16,
@@ -42,6 +46,10 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "block_tokens": 16,
     },
     "auto_b8": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 8},
+    "argmax_b16": {
+        "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_LM_HEAD_ARGMAX": "1"},
+        "block_tokens": 16,
+    },
     "sdpa64_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "64"},
         "block_tokens": 16,

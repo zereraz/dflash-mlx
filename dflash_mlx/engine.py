@@ -28,6 +28,7 @@ class _BaseEngine:
         target_cache: list[Any],
         verify_chunk_tokens: Optional[int],
         capture_layer_ids: Optional[set[int]] = None,
+        return_normalized: bool = False,
     ) -> tuple[mx.array, list[mx.array] | dict[int, mx.array]]:
         from dflash_mlx import runtime as runtime_mod
 
@@ -37,6 +38,7 @@ class _BaseEngine:
             target_cache=target_cache,
             verify_chunk_tokens=verify_chunk_tokens,
             capture_layer_ids=capture_layer_ids,
+            return_normalized=return_normalized,
         )
 
     def rollback(

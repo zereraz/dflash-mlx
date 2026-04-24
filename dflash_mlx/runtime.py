@@ -181,6 +181,95 @@ def _lm_head_logits(target_model: Any, hidden_states: mx.array) -> mx.array:
     return wrapper.lm_head(hidden_states)
 
 
+def _lm_head_argmax_enabled() -> bool:
+    raw = os.environ.get("DFLASH_LM_HEAD_ARGMAX", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _quantized_lm_head_argmax(
+    module: Any,
+    hidden_states: mx.array,
+) -> Optional[mx.array]:
+    if hidden_states.ndim != 3:
+        return None
+    try:
+        max_tokens = int(os.environ.get("DFLASH_LM_HEAD_ARGMAX_MAX_TOKENS", "32"))
+    except ValueError:
+        max_tokens = 32
+    if int(hidden_states.shape[1]) > max(1, max_tokens):
+        return None
+
+    weight = getattr(module, "weight", None)
+    scales = getattr(module, "scales", None)
+    biases = getattr(module, "biases", None)
+    bits = getattr(module, "bits", None)
+    group_size = getattr(module, "group_size", None)
+    if (
+        weight is None
+        or scales is None
+        or biases is None
+        or bits is None
+        or group_size is None
+    ):
+        return None
+
+    try:
+        chunk_rows = int(os.environ.get("DFLASH_LM_HEAD_ARGMAX_CHUNK_ROWS", "32768"))
+    except ValueError:
+        chunk_rows = 32768
+    chunk_rows = max(1, chunk_rows)
+
+    flat_hidden = mx.contiguous(hidden_states.reshape(-1, hidden_states.shape[-1]))
+    row_count = int(weight.shape[0])
+    best_values: Optional[mx.array] = None
+    best_indices: Optional[mx.array] = None
+    for start in range(0, row_count, chunk_rows):
+        end = min(start + chunk_rows, row_count)
+        logits = mx.quantized_matmul(
+            flat_hidden,
+            weight[start:end],
+            scales=scales[start:end],
+            biases=biases[start:end],
+            transpose=True,
+            group_size=int(group_size),
+            bits=int(bits),
+        )
+        chunk_values = mx.max(logits, axis=-1)
+        chunk_indices = mx.argmax(logits, axis=-1).astype(mx.int32) + start
+        if best_values is None or best_indices is None:
+            best_values = chunk_values
+            best_indices = chunk_indices
+        else:
+            take_chunk = chunk_values > best_values
+            best_values = mx.where(take_chunk, chunk_values, best_values)
+            best_indices = mx.where(take_chunk, chunk_indices, best_indices)
+
+    if best_indices is None:
+        return None
+    return best_indices.reshape(hidden_states.shape[:-1]).astype(mx.uint32)
+
+
+def _lm_head_argmax(
+    target_model: Any,
+    hidden_states: mx.array,
+    suppress_token_mask: Optional[mx.array] = None,
+) -> mx.array:
+    if _lm_head_argmax_enabled() and suppress_token_mask is None:
+        wrapper = _target_text_wrapper(target_model)
+        module = (
+            wrapper.model.embed_tokens
+            if getattr(getattr(wrapper, "args", None), "tie_word_embeddings", True)
+            else wrapper.lm_head
+        )
+        posterior = _quantized_lm_head_argmax(module, hidden_states)
+        if posterior is not None:
+            return posterior
+    return greedy_tokens_with_mask(
+        _lm_head_logits(target_model, hidden_states),
+        suppress_token_mask,
+    )
+
+
 def extract_context_feature_from_dict(
     captured_dict: dict[int, mx.array],
     target_layer_ids: list[int],
@@ -885,6 +974,7 @@ def target_forward_with_hidden_states(
     capture_layer_ids: Optional[set[int]] = None,
     skip_logits: bool = False,
     force_hidden_state: bool = False,
+    return_normalized: bool = False,
 ) -> tuple[Optional[mx.array], list[mx.array] | dict[int, mx.array]]:
     inner = _target_text_model(target_model)
     hidden_states = input_embeddings if input_embeddings is not None else inner.embed_tokens(input_ids)
@@ -926,6 +1016,8 @@ def target_forward_with_hidden_states(
     if skip_logits:
         return None, captured
     normalized = inner.norm(h)
+    if return_normalized:
+        return normalized, captured
     logits = _lm_head_logits(target_model, normalized)
     return logits, captured
 
@@ -1023,6 +1115,7 @@ def _verify_target_block(
     target_cache: list[Any],
     verify_chunk_tokens: Optional[int],
     capture_layer_ids: Optional[set[int]] = None,
+    return_normalized: bool = False,
 ) -> tuple[mx.array, list[mx.array] | dict[int, mx.array]]:
     total_tokens = int(verify_ids.shape[1])
     if total_tokens <= 0:
@@ -1035,6 +1128,7 @@ def _verify_target_block(
             input_ids=verify_ids,
             cache=target_cache,
             capture_layer_ids=capture_layer_ids,
+            return_normalized=return_normalized,
         )
         return verify_logits, verify_hidden_states
 
@@ -1048,6 +1142,7 @@ def _verify_target_block(
             input_ids=verify_chunk,
             cache=target_cache,
             capture_layer_ids=capture_layer_ids,
+            return_normalized=return_normalized,
         )
         logits_chunks.append(chunk_logits)
         hidden_state_chunks.append(chunk_hidden_states)
@@ -1552,20 +1647,27 @@ def generate_dflash_once(
             if use_speculative_linear_cache:
                 engine.arm_rollback(target_cache, prefix_len=start)
             verify_start_ns = time.perf_counter_ns()
-            verify_logits, verify_hidden_states = engine.verify(
+            use_lm_head_argmax = (
+                _lm_head_argmax_enabled() and suppress_token_mask is None
+            )
+            verify_output, verify_hidden_states = engine.verify(
                 target_model=target_model,
                 verify_ids=verify_ids,
                 target_cache=target_cache,
                 verify_chunk_tokens=verify_chunk_tokens,
                 capture_layer_ids=capture_layer_ids,
+                return_normalized=use_lm_head_argmax,
             )
             if profile_cycles:
-                _eval_logits_and_captured(verify_logits, verify_hidden_states)
+                _eval_logits_and_captured(verify_output, verify_hidden_states)
             verify_cycle_ns = time.perf_counter_ns() - verify_start_ns
             verify_ns_total += verify_cycle_ns
 
             acceptance_start_ns = time.perf_counter_ns()
-            posterior = greedy_tokens_with_mask(verify_logits[0], suppress_token_mask)
+            if use_lm_head_argmax:
+                posterior = _lm_head_argmax(target_model, verify_output)[0]
+            else:
+                posterior = greedy_tokens_with_mask(verify_output[0], suppress_token_mask)
             if not profile_cycles:
                 mx.async_eval(posterior, *verify_hidden_states.values())
             acceptance_len = int(
@@ -2077,20 +2179,27 @@ def stream_dflash_generate(
             verify_ids = verify_token_ids[None]
             engine.arm_rollback(target_cache, prefix_len=start)
             verify_start_ns = time.perf_counter_ns()
-            verify_logits, verify_hidden_states = engine.verify(
+            use_lm_head_argmax = (
+                _lm_head_argmax_enabled() and suppress_token_mask is None
+            )
+            verify_output, verify_hidden_states = engine.verify(
                 target_model=target_model,
                 verify_ids=verify_ids,
                 target_cache=target_cache,
                 verify_chunk_tokens=verify_chunk_tokens,
                 capture_layer_ids=capture_layer_ids,
+                return_normalized=use_lm_head_argmax,
             )
             if profile_cycles:
-                _eval_logits_and_captured(verify_logits, verify_hidden_states)
+                _eval_logits_and_captured(verify_output, verify_hidden_states)
             verify_cycle_ns = time.perf_counter_ns() - verify_start_ns
             verify_ns_total += verify_cycle_ns
 
             acceptance_start_ns = time.perf_counter_ns()
-            posterior = greedy_tokens_with_mask(verify_logits[0], suppress_token_mask)
+            if use_lm_head_argmax:
+                posterior = _lm_head_argmax(target_model, verify_output)[0]
+            else:
+                posterior = greedy_tokens_with_mask(verify_output[0], suppress_token_mask)
             if not profile_cycles:
                 mx.async_eval(posterior, *verify_hidden_states.values())
             acceptance_len = int(

@@ -73,15 +73,15 @@ class EagerDraftBackend:
             cache=draft_cache,
             target_hidden_is_projected=target_hidden_is_projected,
         )
-        draft_logits = runtime_mod._lm_head_logits(target_model, draft_hidden[:, 1:, :])
-        drafted = runtime_mod.greedy_tokens_with_mask(
-            draft_logits,
+        drafted = runtime_mod._lm_head_argmax(
+            target_model,
+            draft_hidden[:, 1:, :],
             suppress_token_mask,
         ).squeeze(0)
         if async_launch:
             mx.async_eval(drafted)
         else:
-            mx.eval(draft_logits)
+            mx.eval(drafted)
         return drafted
 
 
