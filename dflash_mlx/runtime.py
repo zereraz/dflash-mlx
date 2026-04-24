@@ -222,6 +222,24 @@ def _profile_dflash_cycles_enabled() -> bool:
     return raw not in {"", "0", "false", "no"}
 
 
+def _draft_stream_enabled() -> bool:
+    raw = os.environ.get("DFLASH_DRAFT_STREAM", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _make_draft_stream() -> Optional[Any]:
+    if not _draft_stream_enabled() or not hasattr(mx, "new_stream"):
+        return None
+    if mx.default_device() != mx.gpu or not mx.metal.is_available():
+        return None
+    return mx.new_stream(mx.gpu)
+
+
+def _synchronize_stream(stream: Optional[Any]) -> None:
+    if stream is not None:
+        mx.synchronize(stream)
+
+
 def _ns_to_us(ns: int | float) -> float:
     return float(ns) / 1_000.0
 
@@ -1204,6 +1222,7 @@ def generate_dflash_once(
     use_speculative_linear_cache = verify_chunk_tokens is None
     engine = detect_engine(target_model)
     draft_backend = make_draft_backend()
+    draft_stream = _make_draft_stream()
     target_cache = make_target_cache(
         target_model,
         enable_speculative_linear_cache=use_speculative_linear_cache,
@@ -1325,6 +1344,7 @@ def generate_dflash_once(
                         mask_token_tail=mask_token_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=False,
+                        draft_stream=draft_stream,
                     )
                     block_token_ids[1:block_len] = drafted
                     draft_cycle_ns = time.perf_counter_ns() - draft_start_ns
@@ -1333,6 +1353,7 @@ def generate_dflash_once(
                         prefetched_draft is not None
                         and int(prefetched_draft["block_len"]) == block_len
                     ):
+                        _synchronize_stream(draft_stream)
                         drafted = prefetched_draft["drafted"]
                         current_staged_first = prefetched_draft["staged_first"]
                     else:
@@ -1347,7 +1368,9 @@ def generate_dflash_once(
                             mask_token_tail=mask_token_tail,
                             suppress_token_mask=suppress_token_mask,
                             async_launch=True,
+                            draft_stream=draft_stream,
                         )
+                        _synchronize_stream(draft_stream)
                         draft_cycle_ns = time.perf_counter_ns() - draft_start_ns
                     prefetched_draft = None
                 draft_ns_total += draft_cycle_ns
@@ -1426,6 +1449,7 @@ def generate_dflash_once(
                         mask_token_tail=mask_token_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=True,
+                        draft_stream=draft_stream,
                     )
                     launch_ns = time.perf_counter_ns() - draft_start_ns
                     draft_ns_total += launch_ns
@@ -1530,6 +1554,7 @@ def generate_dflash_once(
                 "commit": commit_ns_total / 1_000.0,
             },
             "speculative_linear_cache": use_speculative_linear_cache,
+            "draft_stream": draft_stream is not None,
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "verify_len_cap": int(verify_len_cap),
             "quantize_kv_cache": bool(quantize_kv_cache),
@@ -1606,6 +1631,7 @@ def stream_dflash_generate(
     use_speculative_linear_cache = verify_chunk_tokens is None
     engine = detect_engine(target_model)
     draft_backend = make_draft_backend()
+    draft_stream = _make_draft_stream()
     target_cache = make_target_cache(
         target_model,
         enable_speculative_linear_cache=use_speculative_linear_cache,
@@ -1759,6 +1785,7 @@ def stream_dflash_generate(
                         mask_token_tail=mask_token_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=False,
+                        draft_stream=draft_stream,
                     )
                     block_token_ids[1:block_len] = drafted
                 else:
@@ -1766,6 +1793,7 @@ def stream_dflash_generate(
                         prefetched_draft is not None
                         and int(prefetched_draft["block_len"]) == block_len
                     ):
+                        _synchronize_stream(draft_stream)
                         drafted = prefetched_draft["drafted"]
                         current_staged_first = prefetched_draft["staged_first"]
                     else:
@@ -1780,7 +1808,9 @@ def stream_dflash_generate(
                             mask_token_tail=mask_token_tail,
                             suppress_token_mask=suppress_token_mask,
                             async_launch=True,
+                            draft_stream=draft_stream,
                         )
+                        _synchronize_stream(draft_stream)
                         draft_cycle_ns = time.perf_counter_ns() - draft_start_ns
                     prefetched_draft = None
                 draft_ns_total += draft_cycle_ns
@@ -1869,6 +1899,7 @@ def stream_dflash_generate(
                         mask_token_tail=mask_token_tail,
                         suppress_token_mask=suppress_token_mask,
                         async_launch=True,
+                        draft_stream=draft_stream,
                     )
                     launch_ns = time.perf_counter_ns() - draft_start_ns
                     draft_ns_total += launch_ns
@@ -1974,6 +2005,7 @@ def stream_dflash_generate(
             },
             "verify_len_cap": int(verify_len_cap),
             "speculative_linear_cache": bool(use_speculative_linear_cache),
+            "draft_stream": draft_stream is not None,
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "quantize_kv_cache": bool(quantize_kv_cache),
             "prefill_step_size": int(prefill_step_size),
