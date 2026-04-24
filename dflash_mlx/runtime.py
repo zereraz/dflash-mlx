@@ -590,6 +590,7 @@ def _split_sdpa_output(
 
 
 _HYBRID_SDPA_EXACT_KV_THRESHOLD = 1024
+_HYBRID_SDPA_SPLIT_MAX_Q_LEN = 64
 
 
 def _install_split_full_attention_hook(attn: Any) -> None:
@@ -647,14 +648,23 @@ def _install_split_full_attention_hook(attn: Any) -> None:
                 _HYBRID_SDPA_EXACT_KV_THRESHOLD,
             )
         )
+        split_max_q_len = int(
+            getattr(
+                self,
+                "_dflash_split_sdpa_max_q_len",
+                _HYBRID_SDPA_SPLIT_MAX_Q_LEN,
+            )
+        )
+        q_len = int(queries.shape[2])
         should_split = (
             cache is not None
             and cached_prefix_len >= exact_prefix_threshold
+            and q_len <= split_max_q_len
             and (mask is None or mask == "causal" or isinstance(mask, mx.array))
         )
         should_use_batched_2pass = (
             should_split
-            and int(queries.shape[2]) == 16
+            and q_len == 16
             and queries.dtype in (mx.bfloat16, mx.float16)
             and int(queries.shape[-1]) in (128, 256)
             and int(values.shape[-1]) in (128, 256)
@@ -735,6 +745,9 @@ def configure_full_attention_split(
             layer.self_attn._dflash_split_sdpa_chunk_size = int(chunk_size)
             layer.self_attn._dflash_split_sdpa_exact_kv_threshold = (
                 _HYBRID_SDPA_EXACT_KV_THRESHOLD
+            )
+            layer.self_attn._dflash_split_sdpa_max_q_len = (
+                _HYBRID_SDPA_SPLIT_MAX_Q_LEN
             )
 
 

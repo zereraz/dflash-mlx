@@ -16,9 +16,17 @@ def _variant() -> str:
     return os.environ.get("DFLASH_VERIFY_VARIANT", "auto")
 
 
+def _auto_pipe_kparts(default: int = 8) -> int:
+    try:
+        value = int(os.environ.get("DFLASH_VERIFY_AUTO_KPARTS", str(default)))
+    except ValueError:
+        return int(default)
+    return max(1, value)
+
+
 def _auto_variant(K: int, N: int) -> tuple[str, int]:
     if K >= 8192 or N <= 8192:
-        return ("mma2big_pipe", 8)
+        return ("mma2big_pipe", _auto_pipe_kparts(8))
     return ("mma2big", 1)
 
 
