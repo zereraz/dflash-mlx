@@ -436,7 +436,7 @@ def _compute_sdpa_2pass_blocks(gqa_factor: int, n_kv: int, device_arch: Optional
         blocks = 64
         if N > 1024 and n_simds > 4:
             if N <= 8192:
-                blocks = 128
+                blocks = 64 if arch == "applegpu_g15s" else 128
             elif N <= 32768:
                 blocks = 256
             elif N <= 65536:
