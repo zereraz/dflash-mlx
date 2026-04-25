@@ -3,6 +3,7 @@
 # Based on DFlash (arXiv:2602.06036)
 
 
+import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -346,9 +347,91 @@ class DFlashDraftModel(nn.Module):
         self.hidden_norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
         self.block_size = int(args.block_size)
         self.mask_token_id = int((args.dflash_config or {}).get("mask_token_id", 0) or 0)
+        self._fused_context_kv_weight = None
+        self._fused_context_kv_bias = None
 
     def _project_target_hidden(self, target_hidden: mx.array) -> mx.array:
         return self.hidden_norm(self.fc(target_hidden))
+
+    def _fused_context_kv_enabled(self) -> bool:
+        raw = os.environ.get("DFLASH_FUSED_DRAFT_CONTEXT_KV", "").strip().lower()
+        return raw not in {"", "0", "false", "no", "off"}
+
+    def _build_fused_context_kv_params(
+        self,
+    ) -> tuple[Optional[mx.array], Optional[mx.array]]:
+        weights = []
+        biases = []
+        has_bias = False
+        for layer in self.layers:
+            attn = layer.self_attn
+            for proj in (attn.k_proj, attn.v_proj):
+                weight = getattr(proj, "weight", None)
+                if weight is None:
+                    return None, None
+                weights.append(weight)
+                bias = getattr(proj, "bias", None)
+                has_bias = has_bias or bias is not None
+                if bias is not None:
+                    biases.append(bias)
+                else:
+                    biases.append(
+                        mx.zeros((int(weight.shape[0]),), dtype=weight.dtype)
+                    )
+        fused_weight = mx.concatenate(weights, axis=0)
+        fused_bias = mx.concatenate(biases, axis=0) if has_bias else None
+        return fused_weight, fused_bias
+
+    def _fused_context_kv(
+        self,
+        target_hidden: mx.array,
+        *,
+        offset: int,
+    ) -> Optional[tuple[list[mx.array], list[mx.array]]]:
+        if not self._fused_context_kv_enabled() or int(target_hidden.shape[1]) <= 0:
+            return None
+        if self._fused_context_kv_weight is None:
+            fused_weight, fused_bias = self._build_fused_context_kv_params()
+            if fused_weight is None:
+                return None
+            self._fused_context_kv_weight = fused_weight
+            self._fused_context_kv_bias = fused_bias
+
+        batch, ctx_len, hidden_size = target_hidden.shape
+        layer_count = len(self.layers)
+        n_kv_heads = int(self.args.num_key_value_heads)
+        head_dim = int(self.args.head_dim)
+        flat_hidden = target_hidden.reshape(batch * ctx_len, hidden_size)
+        kv_flat = flat_hidden @ self._fused_context_kv_weight.T
+        if self._fused_context_kv_bias is not None:
+            kv_flat = kv_flat + self._fused_context_kv_bias
+        kv = kv_flat.reshape(batch, ctx_len, layer_count, 2, n_kv_heads, head_dim)
+        keys = kv[:, :, :, 0, :, :].transpose(2, 0, 3, 1, 4)
+        values = kv[:, :, :, 1, :, :].transpose(2, 0, 3, 1, 4)
+
+        per_layer_keys = []
+        per_layer_values = []
+        for layer_index, layer in enumerate(self.layers):
+            key = layer.self_attn.k_norm(keys[layer_index])
+            key = layer.self_attn.rope(key, offset=int(offset))
+            per_layer_keys.append(key)
+            per_layer_values.append(values[layer_index])
+        return per_layer_keys, per_layer_values
+
+    def prepare_fused_context_kv(self) -> bool:
+        if not self._fused_context_kv_enabled():
+            return False
+        if self._fused_context_kv_weight is None:
+            fused_weight, fused_bias = self._build_fused_context_kv_params()
+            if fused_weight is None:
+                return False
+            self._fused_context_kv_weight = fused_weight
+            self._fused_context_kv_bias = fused_bias
+        if self._fused_context_kv_bias is None:
+            mx.eval(self._fused_context_kv_weight)
+        else:
+            mx.eval(self._fused_context_kv_weight, self._fused_context_kv_bias)
+        return True
 
     def prefill_context_cache(
         self,
@@ -359,20 +442,36 @@ class DFlashDraftModel(nn.Module):
     ) -> None:
         if not target_hidden_segments:
             return
-        for layer, layer_cache in zip(self.layers, cache, strict=True):
+        fused_parts: list[tuple[list[mx.array], list[mx.array]]] = []
+        if self._fused_context_kv_enabled():
+            for target_hidden, offset in target_hidden_segments:
+                fused = self._fused_context_kv(target_hidden, offset=int(offset))
+                if fused is None:
+                    fused_parts = []
+                    break
+                fused_parts.append(fused)
+
+        for layer_index, (layer, layer_cache) in enumerate(
+            zip(self.layers, cache, strict=True)
+        ):
             if not isinstance(layer_cache, ContextOnlyDraftKVCache):
                 continue
             key_parts = []
             value_parts = []
-            for target_hidden, offset in target_hidden_segments:
-                if int(target_hidden.shape[1]) <= 0:
-                    continue
-                keys, values = layer.self_attn.context_kv(
-                    target_hidden,
-                    offset=int(offset),
-                )
-                key_parts.append(keys)
-                value_parts.append(values)
+            if fused_parts:
+                for keys_by_layer, values_by_layer in fused_parts:
+                    key_parts.append(keys_by_layer[layer_index])
+                    value_parts.append(values_by_layer[layer_index])
+            else:
+                for target_hidden, offset in target_hidden_segments:
+                    if int(target_hidden.shape[1]) <= 0:
+                        continue
+                    keys, values = layer.self_attn.context_kv(
+                        target_hidden,
+                        offset=int(offset),
+                    )
+                    key_parts.append(keys)
+                    value_parts.append(values)
             if not key_parts:
                 continue
             keys = mx.concatenate(key_parts, axis=2)

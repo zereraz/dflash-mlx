@@ -130,6 +130,26 @@ def _match_acceptance_length(
     return mx.sum(mx.cumprod(matches, axis=0))
 
 
+def _record_acceptance_position_stats(
+    attempts: list[int],
+    accepts: list[int],
+    *,
+    drafted_count: int,
+    acceptance_length: int,
+) -> None:
+    for index in range(min(int(drafted_count), len(attempts))):
+        attempts[index] += 1
+        if index < int(acceptance_length):
+            accepts[index] += 1
+
+
+def _acceptance_position_rates(attempts: list[int], accepts: list[int]) -> list[float]:
+    return [
+        (accepted / attempted) if attempted else 0.0
+        for attempted, accepted in zip(attempts, accepts)
+    ]
+
+
 def _concat_hidden_state_chunks(
     hidden_state_chunks: list[list[mx.array]],
 ) -> list[mx.array]:
@@ -377,6 +397,14 @@ def _prefill_defer_draft_context_enabled() -> bool:
 def _prefill_middle_no_logits_enabled() -> bool:
     raw = os.environ.get("DFLASH_PREFILL_MIDDLE_NO_LOGITS", "").strip().lower()
     return raw not in {"", "0", "false", "no"}
+
+
+def _clear_cache_after_prefill_enabled() -> bool:
+    # Decode starts immediately after prefill, so keeping MLX's allocator cache
+    # warm avoids first-cycle reallocations on long prompts. Set
+    # DFLASH_CLEAR_CACHE_AFTER_PREFILL=1 on memory-constrained systems.
+    raw = os.environ.get("DFLASH_CLEAR_CACHE_AFTER_PREFILL", "0").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _draft_context_retain_ranges(
@@ -1132,6 +1160,8 @@ def load_draft_bundle(
     quantized = _should_quantize_draft(quantize_draft)
     if quantized:
         nn.quantize(model, bits=4, group_size=64)
+    if hasattr(model, "prepare_fused_context_kv"):
+        model.prepare_fused_context_kv()
     return model, {
         "resolved_model_ref": str(model_ref) if model_ref is not None else str(resolved_ref),
         "config": config,
@@ -1775,7 +1805,7 @@ def generate_dflash_once(
                     (1, 0, int(draft_model.args.hidden_size)),
                     dtype=_draft_hidden_dtype(draft_model),
                 )
-        if hasattr(mx, "clear_cache"):
+        if _clear_cache_after_prefill_enabled() and hasattr(mx, "clear_cache"):
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
 
@@ -1815,6 +1845,8 @@ def generate_dflash_once(
         commit_ns_total = 0
         seen_draft_cycle = False
         acceptance_history: list[int] = []
+        acceptance_position_attempts = [0] * max(0, effective_block_tokens - 1)
+        acceptance_position_accepts = [0] * max(0, effective_block_tokens - 1)
         profile_cycles = _profile_dflash_cycles_enabled()
         cycle_profiles: list[dict[str, Any]] = []
         profile_totals_ns = {
@@ -1948,6 +1980,12 @@ def generate_dflash_once(
                 )
             acceptance_cycle_ns = time.perf_counter_ns() - acceptance_start_ns
             acceptance_history.append(acceptance_len)
+            _record_acceptance_position_stats(
+                acceptance_position_attempts,
+                acceptance_position_accepts,
+                drafted_count=max(0, verify_token_count - 1),
+                acceptance_length=acceptance_len,
+            )
 
             hidden_extract_start_ns = time.perf_counter_ns()
             with _dflash_stream_context():
@@ -2105,6 +2143,12 @@ def generate_dflash_once(
             "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
             "acceptance_history": list(acceptance_history),
+            "acceptance_position_attempts": list(acceptance_position_attempts),
+            "acceptance_position_accepts": list(acceptance_position_accepts),
+            "acceptance_position_rates": _acceptance_position_rates(
+                acceptance_position_attempts,
+                acceptance_position_accepts,
+            ),
             "acceptance_first_20_avg": (sum(first_20) / len(first_20)) if first_20 else 0.0,
             "acceptance_last_20_avg": (sum(last_20) / len(last_20)) if last_20 else 0.0,
             "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
@@ -2385,7 +2429,7 @@ def stream_dflash_generate(
                     (1, 0, int(draft_model.args.hidden_size)),
                     dtype=_draft_hidden_dtype(draft_model),
                 )
-        if hasattr(mx, "clear_cache"):
+        if _clear_cache_after_prefill_enabled() and hasattr(mx, "clear_cache"):
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
 
@@ -2450,6 +2494,8 @@ def stream_dflash_generate(
         commit_ns_total = 0
         seen_draft_cycle = False
         acceptance_history: list[int] = []
+        acceptance_position_attempts = [0] * max(0, effective_block_tokens - 1)
+        acceptance_position_accepts = [0] * max(0, effective_block_tokens - 1)
         cycle_profiles: list[dict[str, Any]] = []
         profile_totals_ns = {
             "draft": 0,
@@ -2580,6 +2626,12 @@ def stream_dflash_generate(
                     _match_acceptance_length(verify_token_ids[1:], posterior[:-1]).item()
                 )
             acceptance_history.append(acceptance_len)
+            _record_acceptance_position_stats(
+                acceptance_position_attempts,
+                acceptance_position_accepts,
+                drafted_count=max(0, verify_token_count - 1),
+                acceptance_length=acceptance_len,
+            )
             acceptance_cycle_ns = time.perf_counter_ns() - acceptance_start_ns
             hidden_extract_start_ns = time.perf_counter_ns()
             with _dflash_stream_context():
@@ -2757,6 +2809,12 @@ def stream_dflash_generate(
             "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
             "acceptance_history": list(acceptance_history),
+            "acceptance_position_attempts": list(acceptance_position_attempts),
+            "acceptance_position_accepts": list(acceptance_position_accepts),
+            "acceptance_position_rates": _acceptance_position_rates(
+                acceptance_position_attempts,
+                acceptance_position_accepts,
+            ),
             "acceptance_first_20_avg": (sum(first_20) / len(first_20)) if first_20 else 0.0,
             "acceptance_last_20_avg": (sum(last_20) / len(last_20)) if last_20 else 0.0,
             "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,

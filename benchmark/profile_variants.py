@@ -25,6 +25,34 @@ DEFAULT_PROMPT = (
 
 SCENARIOS: dict[str, dict[str, Any]] = {
     "auto_b16": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 16},
+    "prefill_clear_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_CLEAR_CACHE_AFTER_PREFILL": "1",
+        },
+        "block_tokens": 16,
+    },
+    "no_prefill_clear_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_CLEAR_CACHE_AFTER_PREFILL": "0",
+        },
+        "block_tokens": 16,
+    },
+    "fused_draft_kv_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_FUSED_DRAFT_CONTEXT_KV": "1",
+        },
+        "block_tokens": 16,
+    },
+    "draft_kv_loop_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_FUSED_DRAFT_CONTEXT_KV": "0",
+        },
+        "block_tokens": 16,
+    },
     "no_defer_b16": {
         "env": {
             "DFLASH_VERIFY_VARIANT": "auto",
@@ -75,6 +103,8 @@ SCENARIOS: dict[str, dict[str, Any]] = {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_VERIFY_LEN": "12"},
         "block_tokens": 16,
     },
+    # SDPA block-count sweeps are intentionally exposed because the default
+    # applegpu_g15s/M3 Max heuristic may not be optimal on every Apple GPU.
     "sdpa64_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_SDPA_2PASS_BLOCKS": "64"},
         "block_tokens": 16,
@@ -177,6 +207,7 @@ def _compact_result(
         "commit_ms": _phase_ms(result, "commit"),
         "decode_tps": _decode_tps(result),
         "acceptance_ratio": float(result.get("acceptance_ratio", 0.0) or 0.0),
+        "acceptance_position_rates": list(result.get("acceptance_position_rates", [])),
         "tokens_per_cycle": float(result.get("tokens_per_cycle", 0.0) or 0.0),
         "cycles": int(result.get("cycles_completed", 0) or 0),
         "profile_totals_ms": _profile_totals_ms(result),

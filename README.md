@@ -31,6 +31,14 @@ https://github.com/user-attachments/assets/a9be2b48-3264-4970-b836-c876b0b7fdda
 - **Verify-specialized int4 qmm** (`verify_qmm`): custom Metal simdgroup-MMA kernel for the M=16 quantized matmul that dominates the target verify step. Two shape-adaptive variants (`mma2big`, `mma2big_pipe` with K-split + double-buffered staging). Auto-enabled on MoE targets and dense models with ≥40 layers where the M=16 specialization amortizes over enough layers to beat stock `mx.quantized_matmul` end-to-end. Opt-in override via `DFLASH_VERIFY_LINEAR={0,1}`.
 - **Numerical coherence**: bf16-sensitive paths, including recurrent state replay and small projections, are stabilized across speculative cycles so accepted tokens stay consistent.
 
+## Device tuning
+
+Some Metal heuristics are device-specific. The default SDPA 2-pass block count includes an `applegpu_g15s` path measured on an Apple M3 Max MacBook Pro. Other Apple Silicon devices can sweep and override it with `DFLASH_SDPA_2PASS_BLOCKS=64`, `128`, or `256`.
+
+By default, dflash-mlx keeps MLX's allocator cache warm after prefill to reduce first decode-cycle overhead. If a machine is memory-constrained, set `DFLASH_CLEAR_CACHE_AFTER_PREFILL=1` to release unused cached allocations before decode starts.
+
+Draft-context KV prefill can be fused across draft layers with `DFLASH_FUSED_DRAFT_CONTEXT_KV=1`. On M3 Max this was close to the layerwise path in short decode tests, so it remains an opt-in experiment; it uses one extra stacked KV weight buffer.
+
 ## Benchmarks
 
 | Model | Tokens | Baseline | DFlash | Speedup | Acceptance |

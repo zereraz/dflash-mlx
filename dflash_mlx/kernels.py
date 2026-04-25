@@ -409,6 +409,10 @@ def tape_replay_kernel(
 
 
 def _compute_sdpa_2pass_blocks(gqa_factor: int, n_kv: int, device_arch: Optional[str] = None) -> int:
+    # Device tuning knob: set DFLASH_SDPA_2PASS_BLOCKS=64/128/256/... to
+    # override the auto heuristic. The applegpu_g15s branch below was measured
+    # on an Apple M3 Max MacBook Pro; other Apple GPU generations should use
+    # this env var when local benchmarks show a different best block count.
     override_raw = os.environ.get("DFLASH_SDPA_2PASS_BLOCKS", "").strip()
     if override_raw:
         try:
@@ -436,6 +440,9 @@ def _compute_sdpa_2pass_blocks(gqa_factor: int, n_kv: int, device_arch: Optional
         blocks = 64
         if N > 1024 and n_simds > 4:
             if N <= 8192:
+                # M3 Max / applegpu_g15s was faster at 64 blocks for long
+                # decode verify up through 8k context. Other "s" GPUs keep the
+                # older 128-block default unless explicitly overridden above.
                 blocks = 64 if arch == "applegpu_g15s" else 128
             elif N <= 32768:
                 blocks = 256
