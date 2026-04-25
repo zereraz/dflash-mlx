@@ -207,6 +207,10 @@ def _compact_result(
         "commit_ms": _phase_ms(result, "commit"),
         "decode_tps": _decode_tps(result),
         "acceptance_ratio": float(result.get("acceptance_ratio", 0.0) or 0.0),
+        "draft_acceptance_ratio": float(
+            result.get("draft_acceptance_ratio", 0.0) or 0.0
+        ),
+        "draft_tokens_attempted": int(result.get("draft_tokens_attempted", 0) or 0),
         "acceptance_position_rates": list(result.get("acceptance_position_rates", [])),
         "tokens_per_cycle": float(result.get("tokens_per_cycle", 0.0) or 0.0),
         "cycles": int(result.get("cycles_completed", 0) or 0),
@@ -220,6 +224,7 @@ def _print_row(row: dict[str, Any]) -> None:
         f"prefill={row['prefill_ms']:.1f}ms "
         f"decode={row['decode_tps']:.2f} tok/s "
         f"accept={row['acceptance_ratio'] * 100:.1f}% "
+        f"draft_accept={row['draft_acceptance_ratio'] * 100:.1f}% "
         f"draft={row['draft_ms']:.1f}ms verify={row['verify_ms']:.1f}ms "
         f"cycles={row['cycles']}",
         flush=True,

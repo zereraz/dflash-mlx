@@ -2110,6 +2110,7 @@ def generate_dflash_once(
             if generated_token_count > 0
             else []
         )
+        draft_tokens_attempted = sum(acceptance_position_attempts)
         first_20 = acceptance_history[:20]
         last_20 = acceptance_history[-20:]
         result = {
@@ -2120,6 +2121,12 @@ def generate_dflash_once(
             "accepted_from_draft": accepted_from_draft,
             "acceptance_ratio": (
                 accepted_from_draft / len(generated_token_ids) if generated_token_ids else 0.0
+            ),
+            "draft_tokens_attempted": int(draft_tokens_attempted),
+            "draft_acceptance_ratio": (
+                accepted_from_draft / draft_tokens_attempted
+                if draft_tokens_attempted
+                else 0.0
             ),
             "block_tokens": effective_block_tokens,
             "cycles_completed": cycles_completed,
@@ -2775,6 +2782,7 @@ def stream_dflash_generate(
                 target_hidden_is_projected=target_hidden_is_projected,
                 total_context_len=start,
             )
+        draft_tokens_attempted = sum(acceptance_position_attempts)
         first_20 = acceptance_history[:20]
         last_20 = acceptance_history[-20:]
         summary = {
@@ -2786,6 +2794,12 @@ def stream_dflash_generate(
             "accepted_from_draft": accepted_from_draft,
             "acceptance_ratio": (
                 accepted_from_draft / len(generated_token_ids) if generated_token_ids else 0.0
+            ),
+            "draft_tokens_attempted": int(draft_tokens_attempted),
+            "draft_acceptance_ratio": (
+                accepted_from_draft / draft_tokens_attempted
+                if draft_tokens_attempted
+                else 0.0
             ),
             "block_tokens": effective_block_tokens,
             "cycles_completed": cycles_completed,
