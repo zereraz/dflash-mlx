@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,8 +25,22 @@ DEFAULT_PROMPT = (
 
 SCENARIOS: dict[str, dict[str, Any]] = {
     "auto_b16": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 16},
+    "no_defer_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_PREFILL_DEFER_DRAFT_CONTEXT": "0",
+        },
+        "block_tokens": 16,
+    },
     "full_logits_b16": {
         "env": {"DFLASH_VERIFY_VARIANT": "auto", "DFLASH_LM_HEAD_ARGMAX": "0"},
+        "block_tokens": 16,
+    },
+    "prefill_full_logits_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_PREFILL_LAST_LOGITS_ONLY": "0",
+        },
         "block_tokens": 16,
     },
     "auto_kp4_b16": {
@@ -81,6 +96,13 @@ SCENARIOS: dict[str, dict[str, Any]] = {
             "DFLASH_VERIFY_VARIANT": "auto",
             "DFLASH_PREFILL_CACHE_FASTPATH": "1",
             "DFLASH_PREFILL_SKIP_CAPTURE": "1",
+        },
+        "block_tokens": 16,
+    },
+    "defer_ctx_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_PREFILL_DEFER_DRAFT_CONTEXT": "1",
         },
         "block_tokens": 16,
     },
@@ -173,6 +195,63 @@ def _print_row(row: dict[str, Any]) -> None:
     )
 
 
+def _normalize_capture_path(path: str | Path) -> Path:
+    capture_path = Path(path).expanduser()
+    if capture_path.suffix != ".gputrace":
+        capture_path = Path(str(capture_path) + ".gputrace")
+    return capture_path
+
+
+def _unique_capture_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 1000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(f"could not find a free capture path for {path}")
+
+
+def _capture_path_for_run(
+    base_path: str,
+    *,
+    scenario_name: str,
+    run_index: int,
+    scenario_count: int,
+    repeat_count: int,
+) -> Path:
+    path = _normalize_capture_path(base_path)
+    if scenario_count > 1 or repeat_count > 1:
+        path = path.with_name(f"{path.stem}-{scenario_name}-run{run_index}{path.suffix}")
+    return _unique_capture_path(path)
+
+
+def _run_with_metal_capture(path: Path | None, fn):
+    if path is None:
+        return fn()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("MTL_CAPTURE_ENABLED", "").strip() != "1":
+        sys.stderr.write(
+            "warning: MLX Metal capture usually requires launching with "
+            "MTL_CAPTURE_ENABLED=1\n"
+        )
+        sys.stderr.flush()
+
+    sys.stderr.write(f"capturing MLX Metal trace to {path}\n")
+    sys.stderr.flush()
+    started = False
+    try:
+        mx.metal.start_capture(str(path))
+        started = True
+        return fn()
+    finally:
+        if started:
+            mx.metal.stop_capture()
+            sys.stderr.write(f"wrote MLX Metal trace to {path}\n")
+            sys.stderr.flush()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -200,7 +279,21 @@ def main() -> None:
         help="Use quantized target full-attention KV cache during DFlash runs.",
     )
     parser.add_argument("--cooldown", type=float, default=0.0)
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=0.0,
+        help="Stop launching new scenario runs after this wall-clock budget. 0 disables the guard.",
+    )
     parser.add_argument("--output", default=None)
+    parser.add_argument(
+        "--metal-capture",
+        default=None,
+        help=(
+            "Write an MLX Metal .gputrace around the real generate call. "
+            "Launch with MTL_CAPTURE_ENABLED=1."
+        ),
+    )
     args = parser.parse_args()
 
     if mx.metal.is_available():
@@ -220,35 +313,66 @@ def main() -> None:
     draft_model, _ = load_draft_bundle(args.draft, lazy=True)
     prompt_tokens = _target_prompt_tokens(tokenizer, args.prompt_tokens, args.prompt)
     scenario_names = [name.strip() for name in args.scenarios.split(",") if name.strip()]
+    repeat_count = max(1, int(args.repeat))
+    max_seconds = max(0.0, float(args.max_seconds))
+    benchmark_start = time.perf_counter()
 
     rows: list[dict[str, Any]] = []
-    for run_index in range(1, max(1, int(args.repeat)) + 1):
+    stopped_by_budget = False
+    for run_index in range(1, repeat_count + 1):
         for name in scenario_names:
+            elapsed_seconds = time.perf_counter() - benchmark_start
+            if max_seconds > 0.0 and elapsed_seconds >= max_seconds:
+                sys.stderr.write(
+                    f"stopping profile_variants after {elapsed_seconds:.1f}s "
+                    f"(--max-seconds {max_seconds:.1f})\n"
+                )
+                sys.stderr.flush()
+                stopped_by_budget = True
+                break
             if name not in SCENARIOS:
                 raise ValueError(f"unknown scenario '{name}'")
             scenario = SCENARIOS[name]
             env = dict(scenario.get("env") or {})
             with patched_env(env):
-                result = generate_dflash_once(
-                    target_model=target_model,
-                    tokenizer=tokenizer,
-                    draft_model=draft_model,
-                    prompt=args.prompt,
-                    max_new_tokens=int(args.max_tokens),
-                    use_chat_template=False,
-                    block_tokens=int(scenario.get("block_tokens", 16)),
-                    prompt_tokens_override=prompt_tokens,
-                    quantize_kv_cache=bool(args.quantize_kv_cache),
-                    stop_token_ids=[],
-                    prefill_step_size=int(args.prefill_step_size),
+                capture_path = (
+                    _capture_path_for_run(
+                        args.metal_capture,
+                        scenario_name=name,
+                        run_index=run_index,
+                        scenario_count=len(scenario_names),
+                        repeat_count=repeat_count,
+                    )
+                    if args.metal_capture
+                    else None
+                )
+                result = _run_with_metal_capture(
+                    capture_path,
+                    lambda: generate_dflash_once(
+                        target_model=target_model,
+                        tokenizer=tokenizer,
+                        draft_model=draft_model,
+                        prompt=args.prompt,
+                        max_new_tokens=int(args.max_tokens),
+                        use_chat_template=False,
+                        block_tokens=int(scenario.get("block_tokens", 16)),
+                        prompt_tokens_override=prompt_tokens,
+                        quantize_kv_cache=bool(args.quantize_kv_cache),
+                        stop_token_ids=[],
+                        prefill_step_size=int(args.prefill_step_size),
+                    ),
                 )
                 row = _compact_result(name, run_index, result, scenario)
+                if capture_path is not None:
+                    row["metal_capture"] = str(capture_path)
                 rows.append(row)
                 _print_row(row)
             if hasattr(mx, "clear_cache"):
                 mx.clear_cache()
             if args.cooldown > 0:
                 time.sleep(float(args.cooldown))
+        if stopped_by_budget:
+            break
 
     report = {
         "model": args.model,
@@ -258,6 +382,9 @@ def main() -> None:
         "prefill_step_size": int(args.prefill_step_size),
         "quantize_kv_cache": bool(args.quantize_kv_cache),
         "profile": bool(args.profile),
+        "metal_capture": args.metal_capture,
+        "max_seconds": max_seconds,
+        "stopped_by_budget": bool(stopped_by_budget),
         "rows": rows,
     }
     if args.output:

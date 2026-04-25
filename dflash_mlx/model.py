@@ -79,6 +79,21 @@ class ContextOnlyDraftKVCache:
             return 0
         return int(self.keys.shape[2])
 
+    def empty(self) -> bool:
+        return self.keys is None or self.values is None
+
+    def is_trimmable(self) -> bool:
+        return False
+
+    @property
+    def nbytes(self) -> int:
+        total = 0
+        if self.keys is not None:
+            total += int(self.keys.nbytes)
+        if self.values is not None:
+            total += int(self.values.nbytes)
+        return total
+
     def set_context(
         self,
         keys: mx.array,
@@ -360,11 +375,13 @@ class DFlashDraftModel(nn.Module):
                 value_parts.append(values)
             if not key_parts:
                 continue
-            layer_cache.set_context(
-                mx.concatenate(key_parts, axis=2),
-                mx.concatenate(value_parts, axis=2),
-                offset=int(total_context_len),
-            )
+            keys = mx.concatenate(key_parts, axis=2)
+            values = mx.concatenate(value_parts, axis=2)
+            if layer_cache.empty():
+                layer_cache.set_context(keys, values, offset=int(total_context_len))
+            else:
+                layer_cache.append_context(keys, values, int(keys.shape[2]))
+                layer_cache.offset = int(total_context_len)
 
     def __call__(
         self,

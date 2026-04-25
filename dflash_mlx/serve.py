@@ -42,11 +42,92 @@ from dflash_mlx.runtime import stream_dflash_generate
 _STATEFUL_SERVER_API = "state" in getattr(mlx_server.Response, "__annotations__", {})
 
 
+def _fetch_dflash_prompt_cache(
+    prompt_cache_store: Any,
+    model_key: Any,
+    prompt: list[int],
+    *,
+    allow_exact: bool = False,
+):
+    prompt_cache, prompt_rest = prompt_cache_store.fetch_nearest_cache(
+        model_key,
+        prompt,
+    )
+    prompt_cache_count = len(prompt) - len(prompt_rest)
+    if prompt_cache is not None and len(prompt_rest) == 0 and not allow_exact:
+        # DFlash needs at least one uncached token to recover the first-token
+        # logits from a reused KV state.
+        prompt_cache = None
+        prompt_rest = prompt
+        prompt_cache_count = 0
+    return prompt_cache, prompt_rest, prompt_cache_count
+
+
+def _select_dflash_stable_prompt_prefix(
+    prompt: list[int],
+    segments: list[list[int]],
+    segment_types: list[str],
+) -> tuple[list[int], list[int]]:
+    if len(prompt) <= 1:
+        return [], prompt
+
+    stable_len: Optional[int] = None
+    if (
+        segments
+        and segment_types
+        and len(segments) == len(segment_types)
+        and segment_types[-1] == "assistant"
+        and len(segments[-1]) > 0
+    ):
+        stable_len = len(prompt) - len(segments[-1])
+
+    if stable_len is None or stable_len <= 0 or stable_len >= len(prompt):
+        stable_len = len(prompt) - 1
+
+    return prompt[:stable_len], prompt[stable_len:]
+
+
+def _dflash_server_prompt_cache_enabled() -> bool:
+    raw = os.environ.get("DFLASH_SERVER_PROMPT_CACHE", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _use_dflash_prompt_cache(cli_args: Any) -> bool:
+    return bool(
+        getattr(cli_args, "dflash_prompt_cache", False)
+    ) or _dflash_server_prompt_cache_enabled()
+
+
+def _stabilize_dflash_prompt_cache_chat_template_args(cli_args: Any) -> None:
+    if not _use_dflash_prompt_cache(cli_args):
+        return
+
+    chat_template_args = getattr(cli_args, "chat_template_args", None)
+    if not isinstance(chat_template_args, dict):
+        return
+
+    if (
+        chat_template_args.get("enable_thinking") is False
+        and "preserve_thinking" not in chat_template_args
+    ):
+        cli_args.chat_template_args = {
+            **chat_template_args,
+            "preserve_thinking": True,
+        }
+
+
 def _read_project_version() -> str:
     try:
         return package_version("dflash-mlx")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _state_machine_is_terminal(state: Any) -> bool:
+    try:
+        return state is not None and state[0] is None
+    except (TypeError, IndexError):
+        return False
 
 
 class DFlashModelProvider(mlx_server.ModelProvider):
@@ -173,9 +254,11 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
             draft_model = self.model_provider.draft_model
             tokenized = self._tokenize(tokenizer, request, args)
             if isinstance(tokenized, tuple):
-                prompt, _, _, initial_state = tokenized
+                prompt, segments, segment_types, initial_state = tokenized
             else:
                 prompt = tokenized
+                segments = [prompt]
+                segment_types = ["assistant"]
                 initial_state = "normal"
 
             sm = None
@@ -221,6 +304,150 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
             live_acceptance_pct = 0.0
             live_prompt_len = len(prompt)
             printed_prefill_progress = False
+            stable_cache_build_us = 0.0
+            use_dflash_prompt_cache = _use_dflash_prompt_cache(
+                self.model_provider.cli_args
+            )
+            using_stable_prompt_cache = False
+            if use_dflash_prompt_cache:
+                stable_prompt, active_prompt_tail = _select_dflash_stable_prompt_prefix(
+                    prompt,
+                    segments,
+                    segment_types,
+                )
+                prompt_cache = None
+                prompt_rest = prompt
+                prompt_cache_count = 0
+
+                if stable_prompt and active_prompt_tail and draft_model is not None:
+                    stable_cache, stable_rest, stable_cache_count = (
+                        _fetch_dflash_prompt_cache(
+                            self.prompt_cache,
+                            self.model_provider.model_key,
+                            stable_prompt,
+                            allow_exact=True,
+                        )
+                    )
+                    if stable_rest:
+                        if stable_cache_count > 0:
+                            sys.stderr.write(
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] stable prompt cache: "
+                                f"{stable_cache_count}/{len(stable_prompt)} cached; "
+                                f"prefill stable suffix {len(stable_rest)} tokens\n"
+                            )
+                            sys.stderr.flush()
+                        stable_summary: Optional[dict[str, Any]] = None
+                        for stable_event in stream_dflash_generate(
+                            target_model=model,
+                            tokenizer=tokenizer,
+                            draft_model=draft_model,
+                            prompt="",
+                            max_new_tokens=0,
+                            use_chat_template=False,
+                            stop_token_ids=stop_token_ids,
+                            prompt_tokens_override=stable_rest,
+                            quantize_kv_cache=getattr(
+                                self.model_provider.cli_args,
+                                "quantize_kv_cache",
+                                False,
+                            ),
+                            prefill_step_size=getattr(
+                                self.model_provider.cli_args,
+                                "prefill_step_size",
+                                2048,
+                            ),
+                            block_tokens=getattr(
+                                self.model_provider.cli_args,
+                                "block_tokens",
+                                None,
+                            ),
+                            prompt_cache=stable_cache,
+                            prompt_cache_count=stable_cache_count,
+                            return_prompt_cache=True,
+                        ):
+                            if stable_event.get("event") in (
+                                "prefill",
+                                "prefill_progress",
+                            ):
+                                processed = int(
+                                    stable_event.get(
+                                        "tokens_processed",
+                                        stable_event.get(
+                                            "prompt_token_count",
+                                            len(stable_prompt),
+                                        ),
+                                    )
+                                )
+                                total = int(
+                                    stable_event.get(
+                                        "tokens_total",
+                                        stable_event.get(
+                                            "prompt_token_count",
+                                            len(stable_prompt),
+                                        ),
+                                    )
+                                )
+                                elapsed_s = (
+                                    time.perf_counter_ns() - request_start_ns
+                                ) / 1e9
+                                sys.stderr.write(
+                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] stable prefill: "
+                                    f"{processed}/{total} tokens | {elapsed_s:.1f}s\n"
+                                )
+                                sys.stderr.flush()
+                            if stable_event.get("event") == "summary":
+                                stable_summary = stable_event
+                                stable_cache_build_us = float(
+                                    stable_event.get("elapsed_us", 0.0) or 0.0
+                                )
+                        stable_cache = (
+                            stable_summary.get("prompt_cache")
+                            if stable_summary is not None
+                            else None
+                        )
+                        if stable_cache is not None:
+                            self.prompt_cache.insert_cache(
+                                self.model_provider.model_key,
+                                stable_prompt,
+                                stable_cache,
+                                cache_type="user",
+                            )
+                            stable_cache, stable_rest, stable_cache_count = (
+                                _fetch_dflash_prompt_cache(
+                                    self.prompt_cache,
+                                    self.model_provider.model_key,
+                                    stable_prompt,
+                                    allow_exact=True,
+                                )
+                            )
+
+                    if stable_cache is not None and not stable_rest:
+                        prompt_cache = stable_cache
+                        prompt_rest = active_prompt_tail
+                        prompt_cache_count = len(stable_prompt)
+                        using_stable_prompt_cache = True
+
+                if not using_stable_prompt_cache:
+                    prompt_cache, prompt_rest, prompt_cache_count = (
+                        _fetch_dflash_prompt_cache(
+                            self.prompt_cache,
+                            self.model_provider.model_key,
+                            prompt,
+                        )
+                    )
+
+                if prompt_cache_count > 0:
+                    sys.stderr.write(
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prompt cache: "
+                        f"{prompt_cache_count}/{len(prompt)} cached; "
+                        f"prefill suffix {len(prompt_rest)} tokens\n"
+                    )
+                    sys.stderr.flush()
+            else:
+                prompt_cache = None
+                prompt_rest = prompt
+                prompt_cache_count = 0
+            ctx.prompt_cache_count = prompt_cache_count
 
             event_iter = stream_dflash_generate(
                 target_model=model,
@@ -230,10 +457,15 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 max_new_tokens=args.max_tokens,
                 use_chat_template=False,
                 stop_token_ids=stop_token_ids,
-                prompt_tokens_override=prompt,
+                prompt_tokens_override=prompt_rest,
                 quantize_kv_cache=getattr(self.model_provider.cli_args, "quantize_kv_cache", False),
                 prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 2048),
                 block_tokens=getattr(self.model_provider.cli_args, "block_tokens", None),
+                prompt_cache=prompt_cache,
+                prompt_cache_count=prompt_cache_count,
+                return_prompt_cache=(
+                    use_dflash_prompt_cache and not using_stable_prompt_cache
+                ),
             )
 
             try:
@@ -298,6 +530,8 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     match_sequence: Optional[tuple[int, ...]] = None
                     token_finish_reason: Optional[str] = None
                     if sm is not None:
+                        if _state_machine_is_terminal(sm_state):
+                            break
                         sm_state, match_sequence, current_state = sm.match(sm_state, token)
                         if match_sequence is not None and current_state is None:
                             token_finish_reason = "stop"
@@ -324,7 +558,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                             )
                         )
                         first_token_flushed = True
-                        if ctx._should_stop:
+                        if ctx._should_stop or immediate_finish_reason is not None:
                             break
                         continue
 
@@ -345,7 +579,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     pending_match = match_sequence
                     pending_finish_reason = token_finish_reason
 
-                    if ctx._should_stop:
+                    if ctx._should_stop or token_finish_reason is not None:
                         break
             finally:
                 event_iter.close()
@@ -368,6 +602,8 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 elapsed_us = float(summary_event.get("elapsed_us", 0.0) or 0.0)
                 phase_timings_us = dict(summary_event.get("phase_timings_us") or {})
                 prefill_us = float(phase_timings_us.get("prefill", 0.0) or 0.0)
+                elapsed_us += stable_cache_build_us
+                prefill_us += stable_cache_build_us
                 decode_s = max(0.0, (elapsed_us - prefill_us) / 1_000_000.0)
                 tok_s = (generation_tokens / decode_s) if decode_s > 0.0 else 0.0
                 acceptance_pct = float(summary_event.get("acceptance_ratio", 0.0) or 0.0) * 100.0
@@ -378,6 +614,20 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     f"prompt: {len(prompt)} tokens\n"
                 )
                 sys.stderr.flush()
+                returned_prompt_cache = summary_event.get("prompt_cache")
+                if (
+                    use_dflash_prompt_cache
+                    and returned_prompt_cache is not None
+                    and not using_stable_prompt_cache
+                ):
+                    generated_token_ids = list(
+                        summary_event.get("generated_token_ids", []) or []
+                    )
+                    self.prompt_cache.insert_cache(
+                        self.model_provider.model_key,
+                        prompt + [int(token_id) for token_id in generated_token_ids],
+                        returned_prompt_cache,
+                    )
 
             rqueue.put(None)
         except Exception as e:
@@ -619,6 +869,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Quantize KV cache to 8-bit (reduces memory for long contexts)",
     )
     parser.add_argument(
+        "--dflash-prompt-cache",
+        action="store_true",
+        help=(
+            "Reuse DFlash target/draft prompt caches across requests. "
+            "Use --prompt-cache-size 1 for long single-chat sessions."
+        ),
+    )
+    parser.add_argument(
         "--prompt-cache-size",
         type=int,
         default=10,
@@ -644,6 +902,7 @@ def main() -> None:
         if args.dflash_max_ctx <= 0:
             raise SystemExit("--dflash-max-ctx must be > 0")
         os.environ["DFLASH_MAX_CTX"] = str(args.dflash_max_ctx)
+    _stabilize_dflash_prompt_cache_chat_template_args(args)
 
     if mx.metal.is_available():
         wired_limit = mx.device_info()["max_recommended_working_set_size"]

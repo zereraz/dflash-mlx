@@ -95,6 +95,12 @@ dflash-serve --model Qwen/Qwen3.5-9B --port 8000
 dflash-serve --model Qwen/Qwen3.5-9B --port 8000 \
   --chat-template-args '{"enable_thinking": false}'
 
+# Reuse the previous request's KV prefix for long single-chat sessions
+dflash-serve --model Qwen/Qwen3.5-9B --port 8000 \
+  --chat-template-args '{"enable_thinking": false}' \
+  --dflash-prompt-cache \
+  --prompt-cache-size 1
+
 # Raise the DFlash fallback threshold for longer prompts
 dflash-serve --model mlx-community/Qwen3.5-35B-A3B-4bit --port 8000 \
   --chat-template-args '{"enable_thinking": false}' \
@@ -113,6 +119,13 @@ PYTHONPATH=. python3 -m examples.demo --mode dflash \
 - Compatible with Open WebUI, Continue, OpenCode, aider, and other OpenAI-compatible clients
 - Streaming SSE support
 - `dflash-serve` requires a supported DFlash draft model (auto-detected from the registry or passed explicitly with `--draft`)
+
+### Runtime toggles
+
+- `DFLASH_PREFILL_DEFER_DRAFT_CONTEXT` defaults to on for the normal prefill path. It delays draft-context materialization until after first-token prefill when possible.
+- `DFLASH_PREFILL_CACHE_FASTPATH=1` switches to the older retained-context cache fastpath. When this is set, deferred draft context defaults to off because the two paths are alternate prefill strategies. Set `DFLASH_PREFILL_DEFER_DRAFT_CONTEXT` explicitly to override the default.
+- `--dflash-prompt-cache` or `DFLASH_SERVER_PROMPT_CACHE=1` opts `dflash-serve` into reusing DFlash prompt caches across requests. It is off by default because long prompts can retain large target and draft caches. Use `--prompt-cache-size 1` for long single-chat sessions.
+- `DFLASH_THREAD_STREAM=1` opts into the experimental thread-local MLX generation stream path.
 
 ## Tested models
 

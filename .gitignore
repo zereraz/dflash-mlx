@@ -20,6 +20,8 @@ eval/results/
 eval/results_*.json
 bench-results/
 bench/
+benchmark/results/profile_*.json
+benchmark/results/huihui-*.json
 *.private.json
 .aider*
 .idea/

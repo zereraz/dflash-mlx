@@ -25,3 +25,8 @@ dflash-benchmark = "benchmark.benchmark:main"
 
 [tool.setuptools.packages.find]
 include = ["dflash_mlx*", "benchmark*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
