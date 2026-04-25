@@ -157,8 +157,29 @@ def _build_dflash_metrics_record(
         "prefill_context_tokens": int(
             summary_event.get("prefill_context_tokens", 0) or 0
         ),
+        "dflash_generation_tokens": int(
+            summary_event.get("dflash_generation_tokens", generation_tokens) or 0
+        ),
+        "fallback_ar_generation_tokens": int(
+            summary_event.get("fallback_ar_generation_tokens", 0) or 0
+        ),
         "fallback_ar": bool(summary_event.get("fallback_ar", False)),
         "fallback_reason": summary_event.get("fallback_reason"),
+        "adaptive_fallback_ar": bool(
+            summary_event.get("adaptive_fallback_ar", False)
+        ),
+        "adaptive_fallback_cycle": summary_event.get("adaptive_fallback_cycle"),
+        "adaptive_fallback_reason": summary_event.get("adaptive_fallback_reason"),
+        "adaptive_fallback_recent_tokens_per_cycle": summary_event.get(
+            "adaptive_fallback_recent_tokens_per_cycle"
+        ),
+        "adaptive_fallback_probe_cycles": summary_event.get(
+            "adaptive_fallback_probe_cycles"
+        ),
+        "adaptive_fallback_window": summary_event.get("adaptive_fallback_window"),
+        "adaptive_fallback_min_tokens_per_cycle": summary_event.get(
+            "adaptive_fallback_min_tokens_per_cycle"
+        ),
         "phase_timings_ms": _phase_timings_ms(
             phase_timings_us,
             stable_cache_build_us=stable_cache_build_us,

@@ -150,6 +150,71 @@ def _acceptance_position_rates(attempts: list[int], accepts: list[int]) -> list[
     ]
 
 
+def _adaptive_fallback_enabled() -> bool:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK", "").strip().lower()
+    return raw not in {"", "0", "false", "no"}
+
+
+def _adaptive_fallback_probe_cycles() -> int:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK_PROBE_CYCLES", "").strip()
+    if not raw:
+        return 4
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 4
+
+
+def _adaptive_fallback_window() -> int:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK_WINDOW", "").strip()
+    if not raw:
+        return 8
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 8
+
+
+def _adaptive_fallback_min_tokens_per_cycle() -> float:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK_MIN_TOKENS_PER_CYCLE", "").strip()
+    if not raw:
+        return 3.0
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 3.0
+
+
+def _adaptive_fallback_recent_tokens_per_cycle(
+    acceptance_history: list[int],
+    *,
+    window: int,
+) -> float:
+    if not acceptance_history:
+        return 0.0
+    recent = acceptance_history[-max(1, int(window)) :]
+    return sum(1 + int(accepted) for accepted in recent) / len(recent)
+
+
+def _should_adaptive_fallback_to_ar(
+    acceptance_history: list[int],
+    *,
+    probe_cycles: int,
+    window: int,
+    min_tokens_per_cycle: float,
+) -> tuple[bool, float]:
+    if len(acceptance_history) < max(1, int(probe_cycles)):
+        return False, _adaptive_fallback_recent_tokens_per_cycle(
+            acceptance_history,
+            window=window,
+        )
+    recent_tokens_per_cycle = _adaptive_fallback_recent_tokens_per_cycle(
+        acceptance_history,
+        window=window,
+    )
+    return recent_tokens_per_cycle < float(min_tokens_per_cycle), recent_tokens_per_cycle
+
+
 def _concat_hidden_state_chunks(
     hidden_state_chunks: list[list[mx.array]],
 ) -> list[mx.array]:
@@ -2499,10 +2564,20 @@ def stream_dflash_generate(
         verify_ns_total = 0
         replay_ns_total = 0
         commit_ns_total = 0
+        fallback_ar_ns_total = 0
         seen_draft_cycle = False
         acceptance_history: list[int] = []
         acceptance_position_attempts = [0] * max(0, effective_block_tokens - 1)
         acceptance_position_accepts = [0] * max(0, effective_block_tokens - 1)
+        adaptive_fallback_enabled = _adaptive_fallback_enabled()
+        adaptive_fallback_probe_cycles = _adaptive_fallback_probe_cycles()
+        adaptive_fallback_window = _adaptive_fallback_window()
+        adaptive_fallback_min_tpc = _adaptive_fallback_min_tokens_per_cycle()
+        adaptive_fallback_triggered = False
+        adaptive_fallback_cycle: Optional[int] = None
+        adaptive_fallback_recent_tpc: Optional[float] = None
+        adaptive_fallback_reason: Optional[str] = None
+        adaptive_fallback_dflash_tokens: Optional[int] = None
         cycle_profiles: list[dict[str, Any]] = []
         profile_totals_ns = {
             "draft": 0,
@@ -2676,7 +2751,24 @@ def stream_dflash_generate(
 
             accepted_from_draft += acceptance_len
             staged_first_next = posterior[acceptance_len : acceptance_len + 1]
-            if not profile_cycles:
+            should_fallback_now = False
+            if adaptive_fallback_enabled:
+                should_fallback_now, adaptive_fallback_recent_tpc = (
+                    _should_adaptive_fallback_to_ar(
+                        acceptance_history,
+                        probe_cycles=adaptive_fallback_probe_cycles,
+                        window=adaptive_fallback_window,
+                        min_tokens_per_cycle=adaptive_fallback_min_tpc,
+                    )
+                )
+                if should_fallback_now:
+                    adaptive_fallback_triggered = True
+                    adaptive_fallback_cycle = cycles_completed
+                    adaptive_fallback_reason = (
+                        f"recent_tokens_per_cycle={adaptive_fallback_recent_tpc:.2f} "
+                        f"< {adaptive_fallback_min_tpc:.2f}"
+                    )
+            if not profile_cycles and not should_fallback_now:
                 next_remaining = max_new_tokens - len(generated_token_ids) - commit_count
                 next_block_len = max(1, min(effective_block_tokens, next_remaining))
                 if next_remaining > 0 and next_block_len > 1:
@@ -2738,6 +2830,52 @@ def stream_dflash_generate(
             if stop_hit:
                 break
 
+            if should_fallback_now:
+                adaptive_fallback_dflash_tokens = len(generated_token_ids)
+                _pre_yield = time.perf_counter_ns()
+                yield {
+                    "event": "adaptive_fallback",
+                    "generated_tokens": len(generated_token_ids),
+                    "cycles_completed": cycles_completed,
+                    "recent_tokens_per_cycle": adaptive_fallback_recent_tpc,
+                    "min_tokens_per_cycle": adaptive_fallback_min_tpc,
+                    "reason": adaptive_fallback_reason,
+                }
+                _yield_pause_ns += time.perf_counter_ns() - _pre_yield
+
+                next_token = int(staged_first_next.item())
+                while len(generated_token_ids) < max_new_tokens:
+                    generated_token_ids.append(next_token)
+                    _pre_yield = time.perf_counter_ns()
+                    yield {
+                        "event": "token",
+                        "token_id": next_token,
+                        "generated_tokens": len(generated_token_ids),
+                        "acceptance_ratio": (
+                            accepted_from_draft / len(generated_token_ids)
+                            if generated_token_ids
+                            else 0.0
+                        ),
+                        "cycles_completed": cycles_completed,
+                        "adaptive_fallback_ar": True,
+                        "adaptive_fallback_reason": adaptive_fallback_reason,
+                    }
+                    _yield_pause_ns += time.perf_counter_ns() - _pre_yield
+                    if next_token in stop_token_ids:
+                        break
+                    fallback_ar_start_ns = time.perf_counter_ns()
+                    with _dflash_stream_context():
+                        token_array = mx.array([[next_token]], dtype=mx.uint32)
+                        logits = target_model(token_array, cache=target_cache)
+                        next_token = int(
+                            greedy_tokens_with_mask(
+                                logits[:, -1, :],
+                                suppress_token_mask,
+                            ).item()
+                        )
+                    fallback_ar_ns_total += time.perf_counter_ns() - fallback_ar_start_ns
+                break
+
             staged_first = staged_first_next
 
             if profile_cycles:
@@ -2774,7 +2912,8 @@ def stream_dflash_generate(
                 profile_totals_ns["cycle_total"] += cycle_total_ns
 
         elapsed_us = (time.perf_counter_ns() - start_ns - _yield_pause_ns) / 1_000.0
-        if return_prompt_cache:
+        export_prompt_cache = return_prompt_cache and not adaptive_fallback_triggered
+        if export_prompt_cache:
             _finalize_draft_context_cache(
                 draft_model=draft_model,
                 draft_cache=draft_cache,
@@ -2785,6 +2924,12 @@ def stream_dflash_generate(
         draft_tokens_attempted = sum(acceptance_position_attempts)
         first_20 = acceptance_history[:20]
         last_20 = acceptance_history[-20:]
+        dflash_generation_tokens = (
+            len(generated_token_ids)
+            if adaptive_fallback_dflash_tokens is None
+            else adaptive_fallback_dflash_tokens
+        )
+        fallback_ar_generation_tokens = len(generated_token_ids) - dflash_generation_tokens
         summary = {
             "event": "summary",
             "elapsed_us": elapsed_us,
@@ -2811,6 +2956,7 @@ def stream_dflash_generate(
                 "verify": verify_ns_total / 1_000.0,
                 "replay": replay_ns_total / 1_000.0,
                 "commit": commit_ns_total / 1_000.0,
+                "fallback_ar": fallback_ar_ns_total / 1_000.0,
             },
             "verify_len_cap": int(verify_len_cap),
             "speculative_linear_cache": bool(use_speculative_linear_cache),
@@ -2821,7 +2967,9 @@ def stream_dflash_generate(
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "quantize_kv_cache": bool(quantize_kv_cache),
             "prefill_step_size": int(prefill_step_size),
-            "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
+            "tokens_per_cycle": (dflash_generation_tokens / cycles_completed) if cycles_completed > 0 else 0.0,
+            "dflash_generation_tokens": int(dflash_generation_tokens),
+            "fallback_ar_generation_tokens": int(fallback_ar_generation_tokens),
             "acceptance_history": list(acceptance_history),
             "acceptance_position_attempts": list(acceptance_position_attempts),
             "acceptance_position_accepts": list(acceptance_position_accepts),
@@ -2831,6 +2979,19 @@ def stream_dflash_generate(
             ),
             "acceptance_first_20_avg": (sum(first_20) / len(first_20)) if first_20 else 0.0,
             "acceptance_last_20_avg": (sum(last_20) / len(last_20)) if last_20 else 0.0,
+            "adaptive_fallback_ar": bool(adaptive_fallback_triggered),
+            "adaptive_fallback_cycle": adaptive_fallback_cycle,
+            "adaptive_fallback_reason": adaptive_fallback_reason,
+            "adaptive_fallback_recent_tokens_per_cycle": adaptive_fallback_recent_tpc,
+            "adaptive_fallback_probe_cycles": (
+                int(adaptive_fallback_probe_cycles) if adaptive_fallback_enabled else None
+            ),
+            "adaptive_fallback_window": (
+                int(adaptive_fallback_window) if adaptive_fallback_enabled else None
+            ),
+            "adaptive_fallback_min_tokens_per_cycle": (
+                float(adaptive_fallback_min_tpc) if adaptive_fallback_enabled else None
+            ),
             "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
         }
         if profile_cycles:
@@ -2838,7 +2999,7 @@ def stream_dflash_generate(
             summary["cycle_profile_totals_us"] = {
                 key: _ns_to_us(value) for key, value in profile_totals_ns.items()
             }
-        if return_prompt_cache:
+        if export_prompt_cache:
             summary["prompt_cache"] = _combined_dflash_prompt_cache(
                 target_cache,
                 draft_cache,
