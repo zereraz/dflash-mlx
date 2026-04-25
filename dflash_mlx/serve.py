@@ -9,6 +9,7 @@ import json
 import sys
 import os
 import logging
+import threading
 import time
 import warnings
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -40,6 +41,166 @@ from dflash_mlx.runtime import stream_dflash_generate
 
 
 _STATEFUL_SERVER_API = "state" in getattr(mlx_server.Response, "__annotations__", {})
+_METRICS_LOG_ENV = "DFLASH_METRICS_LOG"
+_METRICS_TOKEN_INTERVAL_ENV = "DFLASH_METRICS_TOKEN_INTERVAL"
+_METRICS_LOG_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
+
+
+def _dflash_metrics_log_path(cli_args: Any) -> Optional[str]:
+    path = getattr(cli_args, "dflash_metrics_log", None)
+    if path is None or str(path).strip() == "":
+        path = os.environ.get(_METRICS_LOG_ENV, "").strip()
+    if path is None or str(path).strip() == "":
+        return None
+    return os.path.expanduser(str(path))
+
+
+def _dflash_metrics_token_interval() -> int:
+    raw_value = os.environ.get(_METRICS_TOKEN_INTERVAL_ENV, "").strip()
+    if not raw_value:
+        return 128
+    try:
+        return max(0, int(raw_value))
+    except ValueError:
+        return 128
+
+
+def _phase_timings_ms(
+    phase_timings_us: dict[str, Any],
+    *,
+    stable_cache_build_us: float = 0.0,
+) -> dict[str, float]:
+    timings = {
+        str(key): float(value or 0.0) / 1_000.0
+        for key, value in phase_timings_us.items()
+    }
+    if stable_cache_build_us:
+        timings["prefill"] = timings.get("prefill", 0.0) + (
+            stable_cache_build_us / 1_000.0
+        )
+        timings["stable_cache_build"] = stable_cache_build_us / 1_000.0
+    return timings
+
+
+def _build_dflash_metrics_record(
+    *,
+    request_id: str,
+    summary_event: dict[str, Any],
+    prompt_len: int,
+    finish_reason: Optional[str],
+    prompt_cache_count: int = 0,
+    stable_cache_build_us: float = 0.0,
+    using_stable_prompt_cache: bool = False,
+    timestamp_s: Optional[float] = None,
+) -> dict[str, Any]:
+    phase_timings_us = dict(summary_event.get("phase_timings_us") or {})
+    elapsed_us = float(summary_event.get("elapsed_us", 0.0) or 0.0)
+    prefill_us = float(phase_timings_us.get("prefill", 0.0) or 0.0)
+    elapsed_us += stable_cache_build_us
+    prefill_us += stable_cache_build_us
+    decode_us = max(0.0, elapsed_us - prefill_us)
+    generation_tokens = int(summary_event.get("generation_tokens", 0) or 0)
+    cycles_completed = int(summary_event.get("cycles_completed", 0) or 0)
+    draft_tokens_attempted = int(
+        summary_event.get("draft_tokens_attempted", 0) or 0
+    )
+    prompt_token_count = int(
+        summary_event.get("prompt_token_count", prompt_len) or prompt_len
+    )
+    cached_prompt_tokens = max(0, int(prompt_cache_count))
+    timestamp_s = time.time() if timestamp_s is None else timestamp_s
+
+    return {
+        "schema": "dflash_session_metrics_v1",
+        "event": "summary",
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(timestamp_s)),
+        "timestamp_s": float(timestamp_s),
+        "request_id": request_id,
+        "finish_reason": finish_reason,
+        "prompt_tokens": int(prompt_len),
+        "runtime_prompt_tokens": prompt_token_count,
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "uncached_prompt_tokens": max(0, prompt_token_count - cached_prompt_tokens),
+        "using_stable_prompt_cache": bool(using_stable_prompt_cache),
+        "stable_cache_build_ms": stable_cache_build_us / 1_000.0,
+        "generation_tokens": generation_tokens,
+        "elapsed_ms": elapsed_us / 1_000.0,
+        "prefill_ms": prefill_us / 1_000.0,
+        "decode_ms": decode_us / 1_000.0,
+        "decode_tps": (
+            generation_tokens / (decode_us / 1_000_000.0) if decode_us > 0.0 else 0.0
+        ),
+        "accepted_from_draft": int(summary_event.get("accepted_from_draft", 0) or 0),
+        "acceptance_ratio": float(summary_event.get("acceptance_ratio", 0.0) or 0.0),
+        "draft_tokens_attempted": draft_tokens_attempted,
+        "draft_acceptance_ratio": float(
+            summary_event.get("draft_acceptance_ratio", 0.0) or 0.0
+        ),
+        "cycles_completed": cycles_completed,
+        "tokens_per_cycle": float(summary_event.get("tokens_per_cycle", 0.0) or 0.0),
+        "block_tokens": summary_event.get("block_tokens"),
+        "verify_len_cap": summary_event.get("verify_len_cap"),
+        "verify_chunk_tokens": summary_event.get("verify_chunk_tokens"),
+        "prefill_step_size": summary_event.get("prefill_step_size"),
+        "quantize_kv_cache": bool(summary_event.get("quantize_kv_cache", False)),
+        "speculative_linear_cache": bool(
+            summary_event.get("speculative_linear_cache", False)
+        ),
+        "prefill_cache_fastpath": bool(
+            summary_event.get("prefill_cache_fastpath", False)
+        ),
+        "prefill_defer_draft_context": bool(
+            summary_event.get("prefill_defer_draft_context", False)
+        ),
+        "prefill_skip_capture": bool(summary_event.get("prefill_skip_capture", False)),
+        "prefill_context_tokens": int(
+            summary_event.get("prefill_context_tokens", 0) or 0
+        ),
+        "fallback_ar": bool(summary_event.get("fallback_ar", False)),
+        "fallback_reason": summary_event.get("fallback_reason"),
+        "phase_timings_ms": _phase_timings_ms(
+            phase_timings_us,
+            stable_cache_build_us=stable_cache_build_us,
+        ),
+        "acceptance_position_attempts": list(
+            summary_event.get("acceptance_position_attempts", []) or []
+        ),
+        "acceptance_position_accepts": list(
+            summary_event.get("acceptance_position_accepts", []) or []
+        ),
+        "acceptance_position_rates": list(
+            summary_event.get("acceptance_position_rates", []) or []
+        ),
+        "acceptance_first_20_avg": float(
+            summary_event.get("acceptance_first_20_avg", 0.0) or 0.0
+        ),
+        "acceptance_last_20_avg": float(
+            summary_event.get("acceptance_last_20_avg", 0.0) or 0.0
+        ),
+        "peak_memory_gb": summary_event.get("peak_memory_gb"),
+    }
+
+
+def _append_dflash_metrics_event(cli_args: Any, record: dict[str, Any]) -> None:
+    path = _dflash_metrics_log_path(cli_args)
+    if path is None:
+        return
+    record = dict(record)
+    record.setdefault("schema", "dflash_session_metrics_v1")
+    record.setdefault("timestamp", time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    record.setdefault("timestamp_s", time.time())
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        line = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        with _METRICS_LOG_LOCK:
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+    except Exception as exc:
+        logger.warning("failed to write DFlash metrics log %s: %s", path, exc)
 
 
 def _fetch_dflash_prompt_cache(
@@ -235,12 +396,23 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
     def _serve_single(self, request):
         request_tuple = request
         rqueue, request, args = request_tuple
+        cli_args = self.model_provider.cli_args
 
         if args.max_tokens <= 256:
+            request_id = f"{time.time_ns():x}"
             sys.stderr.write(
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] fast-path AR | max_tokens={args.max_tokens}\n"
             )
             sys.stderr.flush()
+            _append_dflash_metrics_event(
+                cli_args,
+                {
+                    "event": "fast_path_ar",
+                    "request_id": request_id,
+                    "max_tokens": int(args.max_tokens),
+                    "reason": "max_tokens <= 256",
+                },
+            )
             saved_draft_model = self.model_provider.draft_model
             try:
                 self.model_provider.draft_model = None
@@ -297,6 +469,11 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
             first_token_flushed = False
             finish_reason: Optional[str] = None
             summary_event: Optional[dict[str, Any]] = None
+            request_id = f"{time.time_ns():x}"
+            metrics_log_enabled = _dflash_metrics_log_path(cli_args) is not None
+            metrics_token_interval = (
+                _dflash_metrics_token_interval() if metrics_log_enabled else 0
+            )
             request_start_ns = time.perf_counter_ns()
             prefill_elapsed_s = 0.0
             live_tok_s = 0.0
@@ -395,6 +572,17 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                     f"{processed}/{total} tokens | {elapsed_s:.1f}s\n"
                                 )
                                 sys.stderr.flush()
+                                _append_dflash_metrics_event(
+                                    cli_args,
+                                    {
+                                        "event": "stable_prefill_progress",
+                                        "request_id": request_id,
+                                        "prompt_tokens": len(prompt),
+                                        "tokens_processed": processed,
+                                        "tokens_total": total,
+                                        "elapsed_ms": elapsed_s * 1_000.0,
+                                    },
+                                )
                             if stable_event.get("event") == "summary":
                                 stable_summary = stable_event
                                 stable_cache_build_us = float(
@@ -448,6 +636,23 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 prompt_rest = prompt
                 prompt_cache_count = 0
             ctx.prompt_cache_count = prompt_cache_count
+            _append_dflash_metrics_event(
+                cli_args,
+                {
+                    "event": "request_start",
+                    "request_id": request_id,
+                    "prompt_tokens": len(prompt),
+                    "cached_prompt_tokens": prompt_cache_count,
+                    "uncached_prompt_tokens": len(prompt_rest),
+                    "using_stable_prompt_cache": bool(using_stable_prompt_cache),
+                    "max_tokens": int(args.max_tokens),
+                    "block_tokens": getattr(cli_args, "block_tokens", None),
+                    "prefill_step_size": getattr(cli_args, "prefill_step_size", 2048),
+                    "quantize_kv_cache": bool(
+                        getattr(cli_args, "quantize_kv_cache", False)
+                    ),
+                },
+            )
 
             event_iter = stream_dflash_generate(
                 target_model=model,
@@ -458,9 +663,9 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 use_chat_template=False,
                 stop_token_ids=stop_token_ids,
                 prompt_tokens_override=prompt_rest,
-                quantize_kv_cache=getattr(self.model_provider.cli_args, "quantize_kv_cache", False),
-                prefill_step_size=getattr(self.model_provider.cli_args, "prefill_step_size", 2048),
-                block_tokens=getattr(self.model_provider.cli_args, "block_tokens", None),
+                quantize_kv_cache=getattr(cli_args, "quantize_kv_cache", False),
+                prefill_step_size=getattr(cli_args, "prefill_step_size", 2048),
+                block_tokens=getattr(cli_args, "block_tokens", None),
                 prompt_cache=prompt_cache,
                 prompt_cache_count=prompt_cache_count,
                 return_prompt_cache=(
@@ -489,6 +694,21 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                 f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prefill: {processed}/{total} tokens | {elapsed_s:.1f}s\n"
                             )
                             sys.stderr.flush()
+                            _append_dflash_metrics_event(
+                                cli_args,
+                                {
+                                    "event": "prefill_progress",
+                                    "request_id": request_id,
+                                    "prompt_tokens": len(prompt),
+                                    "cached_prompt_tokens": prompt_cache_count,
+                                    "tokens_processed": processed,
+                                    "tokens_total": total,
+                                    "elapsed_ms": elapsed_s * 1_000.0,
+                                    "prefill_step_size": event.get(
+                                        "prefill_step_size"
+                                    ),
+                                },
+                            )
                             printed_prefill_progress = True
                         else:
                             prefill_elapsed_s = elapsed_s
@@ -497,6 +717,21 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                     f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prefill: {processed}/{total} tokens | {elapsed_s:.1f}s\n"
                                 )
                                 sys.stderr.flush()
+                            _append_dflash_metrics_event(
+                                cli_args,
+                                {
+                                    "event": "prefill_done",
+                                    "request_id": request_id,
+                                    "prompt_tokens": len(prompt),
+                                    "cached_prompt_tokens": prompt_cache_count,
+                                    "tokens_processed": processed,
+                                    "tokens_total": total,
+                                    "elapsed_ms": elapsed_s * 1_000.0,
+                                    "prefill_step_size": event.get(
+                                        "prefill_step_size"
+                                    ),
+                                },
+                            )
                         continue
                     if event.get("event") != "token":
                         if event.get("event") == "summary":
@@ -519,6 +754,27 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     live_acceptance_pct = float(event.get("acceptance_ratio", 0.0) or 0.0) * 100.0
                     elapsed_s = (time.perf_counter_ns() - request_start_ns) / 1e9
                     live_tok_s = live_token_count / max(0.001, elapsed_s - prefill_elapsed_s)
+                    if (
+                        metrics_token_interval > 0
+                        and live_token_count % metrics_token_interval == 0
+                    ):
+                        _append_dflash_metrics_event(
+                            cli_args,
+                            {
+                                "event": "decode_progress",
+                                "request_id": request_id,
+                                "prompt_tokens": len(prompt),
+                                "generated_tokens": live_token_count,
+                                "elapsed_ms": elapsed_s * 1_000.0,
+                                "decode_tps": live_tok_s,
+                                "acceptance_ratio": float(
+                                    event.get("acceptance_ratio", 0.0) or 0.0
+                                ),
+                                "cycles_completed": int(
+                                    event.get("cycles_completed", 0) or 0
+                                ),
+                            },
+                        )
                     if live_token_count % 2048 == 0:
                         sys.stderr.write(
                             f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] {live_tok_s:.1f} tok/s | {live_acceptance_pct:.1f}% accepted | "
@@ -607,13 +863,35 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 decode_s = max(0.0, (elapsed_us - prefill_us) / 1_000_000.0)
                 tok_s = (generation_tokens / decode_s) if decode_s > 0.0 else 0.0
                 acceptance_pct = float(summary_event.get("acceptance_ratio", 0.0) or 0.0) * 100.0
+                draft_acceptance_pct = (
+                    float(summary_event.get("draft_acceptance_ratio", 0.0) or 0.0)
+                    * 100.0
+                )
+                cycles_completed = int(summary_event.get("cycles_completed", 0) or 0)
+                tokens_per_cycle = float(
+                    summary_event.get("tokens_per_cycle", 0.0) or 0.0
+                )
                 total_s = elapsed_us / 1_000_000.0
                 sys.stderr.write(
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] {tok_s:.1f} tok/s | {acceptance_pct:.1f}% accepted | "
+                    f"draft_accept {draft_acceptance_pct:.1f}% | "
+                    f"{cycles_completed} cycles | {tokens_per_cycle:.1f} tok/cycle | "
                     f"{generation_tokens} tokens | {total_s:.1f}s | "
                     f"prompt: {len(prompt)} tokens\n"
                 )
                 sys.stderr.flush()
+                _append_dflash_metrics_event(
+                    cli_args,
+                    _build_dflash_metrics_record(
+                        request_id=request_id,
+                        summary_event=summary_event,
+                        prompt_len=len(prompt),
+                        finish_reason=finish_reason,
+                        prompt_cache_count=prompt_cache_count,
+                        stable_cache_build_us=stable_cache_build_us,
+                        using_stable_prompt_cache=using_stable_prompt_cache,
+                    ),
+                )
                 returned_prompt_cache = summary_event.get("prompt_cache")
                 if (
                     use_dflash_prompt_cache
@@ -874,6 +1152,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Reuse DFlash target/draft prompt caches across requests. "
             "Use --prompt-cache-size 1 for long single-chat sessions."
+        ),
+    )
+    parser.add_argument(
+        "--dflash-metrics-log",
+        type=str,
+        default=None,
+        help=(
+            "Append privacy-safe DFlash session metrics as JSONL. "
+            f"Can also be set with {_METRICS_LOG_ENV}."
         ),
     )
     parser.add_argument(

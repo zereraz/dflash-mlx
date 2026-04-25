@@ -109,6 +109,13 @@ dflash-serve --model Qwen/Qwen3.5-9B --port 8000 \
   --dflash-prompt-cache \
   --prompt-cache-size 1
 
+# Log live, privacy-safe JSONL metrics for real chat sessions
+dflash-serve --model Qwen/Qwen3.5-9B --port 8000 \
+  --chat-template-args '{"enable_thinking": false}' \
+  --dflash-prompt-cache \
+  --prompt-cache-size 1 \
+  --dflash-metrics-log benchmark/results/session.jsonl
+
 # Raise the DFlash fallback threshold for longer prompts
 dflash-serve --model mlx-community/Qwen3.5-35B-A3B-4bit --port 8000 \
   --chat-template-args '{"enable_thinking": false}' \
@@ -133,6 +140,7 @@ PYTHONPATH=. python3 -m examples.demo --mode dflash \
 - `DFLASH_PREFILL_DEFER_DRAFT_CONTEXT` defaults to on for the normal prefill path. It delays draft-context materialization until after first-token prefill when possible.
 - `DFLASH_PREFILL_CACHE_FASTPATH=1` switches to the older retained-context cache fastpath. When this is set, deferred draft context defaults to off because the two paths are alternate prefill strategies. Set `DFLASH_PREFILL_DEFER_DRAFT_CONTEXT` explicitly to override the default.
 - `--dflash-prompt-cache` or `DFLASH_SERVER_PROMPT_CACHE=1` opts `dflash-serve` into reusing DFlash prompt caches across requests. It is off by default because long prompts can retain large target and draft caches. Use `--prompt-cache-size 1` for long single-chat sessions.
+- `--dflash-metrics-log path.jsonl` or `DFLASH_METRICS_LOG=path.jsonl` appends live request metrics without prompt or output text. Progress rows track long prefill/decode; summary rows include prefill time, decode tok/s, draft acceptance, cycles, cache use, and phase timings.
 - `DFLASH_THREAD_STREAM=1` opts into the experimental thread-local MLX generation stream path.
 
 ## Tested models

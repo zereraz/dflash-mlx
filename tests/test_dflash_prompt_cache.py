@@ -3,6 +3,7 @@
 # Based on DFlash (arXiv:2602.06036)
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -21,6 +22,8 @@ from dflash_mlx.runtime import (
     target_forward_with_hidden_states,
 )
 from dflash_mlx.serve import (
+    _append_dflash_metrics_event,
+    _build_dflash_metrics_record,
     _dflash_server_prompt_cache_enabled,
     _fetch_dflash_prompt_cache,
     _select_dflash_stable_prompt_prefix,
@@ -429,6 +432,70 @@ def test_state_machine_terminal_detection_handles_stopped_state():
     assert _state_machine_is_terminal((None, None, {"normal": object()}))
     assert not _state_machine_is_terminal(("normal", object(), {"normal": object()}))
     assert not _state_machine_is_terminal(None)
+
+
+def test_build_dflash_metrics_record_adjusts_stable_cache_time():
+    record = _build_dflash_metrics_record(
+        request_id="req",
+        summary_event={
+            "elapsed_us": 10_000.0,
+            "prompt_token_count": 10,
+            "generation_tokens": 4,
+            "accepted_from_draft": 3,
+            "acceptance_ratio": 0.75,
+            "draft_tokens_attempted": 8,
+            "draft_acceptance_ratio": 0.375,
+            "cycles_completed": 2,
+            "tokens_per_cycle": 2.0,
+            "phase_timings_us": {"prefill": 4_000.0, "draft": 1_000.0},
+            "acceptance_position_rates": [1.0, 0.5],
+        },
+        prompt_len=10,
+        finish_reason="stop",
+        prompt_cache_count=6,
+        stable_cache_build_us=2_000.0,
+        using_stable_prompt_cache=True,
+        timestamp_s=1.0,
+    )
+
+    assert record["event"] == "summary"
+    assert record["request_id"] == "req"
+    assert record["prefill_ms"] == 6.0
+    assert record["elapsed_ms"] == 12.0
+    assert record["decode_ms"] == 6.0
+    assert record["decode_tps"] == pytest.approx(4 / 0.006)
+    assert record["cached_prompt_tokens"] == 6
+    assert record["uncached_prompt_tokens"] == 4
+    assert record["draft_acceptance_ratio"] == 0.375
+    assert record["acceptance_position_rates"] == [1.0, 0.5]
+    assert record["phase_timings_ms"]["prefill"] == 6.0
+    assert record["phase_timings_ms"]["stable_cache_build"] == 2.0
+
+
+def test_append_dflash_metrics_event_writes_jsonl(tmp_path):
+    metrics_path = tmp_path / "metrics" / "session.jsonl"
+    args = SimpleNamespace(dflash_metrics_log=str(metrics_path))
+
+    _append_dflash_metrics_event(
+        args,
+        {
+            "event": "request_start",
+            "request_id": "req",
+            "prompt_tokens": 12,
+        },
+    )
+
+    rows = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    assert rows == [
+        {
+            "event": "request_start",
+            "prompt_tokens": 12,
+            "request_id": "req",
+            "schema": "dflash_session_metrics_v1",
+            "timestamp": rows[0]["timestamp"],
+            "timestamp_s": rows[0]["timestamp_s"],
+        }
+    ]
 
 
 class _FakeEmbed:
