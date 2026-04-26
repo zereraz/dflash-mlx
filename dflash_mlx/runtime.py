@@ -19,6 +19,7 @@ from mlx_lm.models.base import (
     create_ssm_mask,
     scaled_dot_product_attention,
 )
+from mlx_lm.models.activations import swiglu
 from mlx_lm.utils import load, load_model
 
 from dflash_mlx.adapter import detect_engine
@@ -35,6 +36,7 @@ from dflash_mlx.recurrent_rollback_cache import RecurrentRollbackCache
 _DFLASH_GENERATION_STREAM = None
 _KV_CACHE_BITS_DEFAULT = 8
 _KV_CACHE_GROUP_SIZE_DEFAULT = 64
+_MLX_CACHE_FRACTION_DEFAULT = 0.25
 
 
 def _dflash_stream_context():
@@ -47,6 +49,40 @@ def _dflash_stream_context():
     if _DFLASH_GENERATION_STREAM is None:
         _DFLASH_GENERATION_STREAM = mx.new_thread_local_stream(mx.default_device())
     return mx.stream(_DFLASH_GENERATION_STREAM)
+
+
+def _resolve_mlx_cache_fraction(device_info: dict[str, Any]) -> float:
+    del device_info
+    raw = os.environ.get("DFLASH_MLX_CACHE_FRACTION", "").strip()
+    if raw:
+        try:
+            return min(1.0, max(0.0, float(raw)))
+        except ValueError:
+            return _MLX_CACHE_FRACTION_DEFAULT
+
+    # Hardware note: on this 40-core M3 Max MacBook Pro
+    # (applegpu_g15s, 128 GB unified memory), DFLASH_MLX_CACHE_FRACTION=0.125
+    # was faster for 4096-token stable-cache prefill, but 10k-token prefill
+    # stayed better at MLX-LM's 0.25 default. Keep 0.25 as the safe default;
+    # use the env var for device/prompt-specific sweeps.
+    return _MLX_CACHE_FRACTION_DEFAULT
+
+
+def configure_mlx_memory_limits() -> dict[str, Any]:
+    if not mx.metal.is_available():
+        return {"metal": False}
+    device_info = mx.device_info()
+    wired_limit = int(device_info["max_recommended_working_set_size"])
+    cache_fraction = _resolve_mlx_cache_fraction(device_info)
+    mx.set_wired_limit(wired_limit)
+    mx.set_cache_limit(int(wired_limit * cache_fraction))
+    return {
+        "metal": True,
+        "wired_limit": wired_limit,
+        "cache_fraction": cache_fraction,
+        "device_name": str(device_info.get("device_name", "")),
+        "architecture": str(device_info.get("architecture", "")),
+    }
 
 
 def _resolve_kv_cache_bits(kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT) -> int:
@@ -799,6 +835,74 @@ def _attention_has_gated_q_proj(attn: Any) -> bool:
     return int(q_proj_weight.shape[0]) == expected_out_dim
 
 
+def _pack_mlp_gate_up_enabled() -> bool:
+    raw = os.environ.get("DFLASH_PACK_MLP_GATE_UP", "1").strip().lower()
+    return raw not in {"", "0", "false", "no", "off"}
+
+
+def _quantized_linears_compatible(lhs: nn.Module, rhs: nn.Module) -> bool:
+    if not isinstance(lhs, nn.QuantizedLinear) or not isinstance(
+        rhs,
+        nn.QuantizedLinear,
+    ):
+        return False
+    lhs_has_biases = getattr(lhs, "biases", None) is not None
+    rhs_has_biases = getattr(rhs, "biases", None) is not None
+    return (
+        int(getattr(lhs, "group_size", 0)) == int(getattr(rhs, "group_size", -1))
+        and int(getattr(lhs, "bits", 0)) == int(getattr(rhs, "bits", -1))
+        and getattr(lhs, "mode", "affine") == getattr(rhs, "mode", "affine")
+        and int(lhs.weight.shape[1]) == int(rhs.weight.shape[1])
+        and ("bias" in lhs) == ("bias" in rhs)
+        and lhs_has_biases == rhs_has_biases
+    )
+
+
+def _concat_quantized_linears(
+    lhs: nn.QuantizedLinear,
+    rhs: nn.QuantizedLinear,
+) -> nn.QuantizedLinear:
+    ql = nn.QuantizedLinear.__new__(nn.QuantizedLinear)
+    nn.Module.__init__(ql)
+    ql.group_size = lhs.group_size
+    ql.bits = lhs.bits
+    ql.mode = getattr(lhs, "mode", "affine")
+    ql.weight = mx.concatenate([lhs.weight, rhs.weight], axis=0)
+    ql.scales = mx.concatenate([lhs.scales, rhs.scales], axis=0)
+    lhs_biases = getattr(lhs, "biases", None)
+    rhs_biases = getattr(rhs, "biases", None)
+    if lhs_biases is not None and rhs_biases is not None:
+        ql.biases = mx.concatenate([lhs_biases, rhs_biases], axis=0)
+    if "bias" in lhs and "bias" in rhs:
+        ql.bias = mx.concatenate([lhs.bias, rhs.bias], axis=0)
+    ql.freeze()
+    return ql
+
+
+class _PackedGateUpMLP(nn.Module):
+    def __init__(self, mlp: nn.Module):
+        super().__init__()
+        gate_proj = getattr(mlp, "gate_proj", None)
+        up_proj = getattr(mlp, "up_proj", None)
+        down_proj = getattr(mlp, "down_proj", None)
+        if (
+            gate_proj is None
+            or up_proj is None
+            or down_proj is None
+            or not _quantized_linears_compatible(gate_proj, up_proj)
+        ):
+            raise ValueError("MLP gate/up projections are not compatible for packing")
+        self.gate_up_proj = _concat_quantized_linears(gate_proj, up_proj)
+        self.down_proj = down_proj
+        self.hidden_dim = int(gate_proj.weight.shape[0])
+        self._dflash_gate_up_packed = True
+
+    def __call__(self, x: mx.array) -> mx.array:
+        gate_up = self.gate_up_proj(x)
+        gate, up = mx.split(gate_up, [self.hidden_dim], axis=-1)
+        return self.down_proj(swiglu(gate, up))
+
+
 def pack_target_model_weights_selective(
     target_model: Any,
     *,
@@ -818,6 +922,16 @@ def pack_target_model_weights_selective(
         "packed_mlp_layers": [],
         "packed_attention_layers": [],
     }
+    if pack_mlp:
+        for layer_index, layer in enumerate(text_model.layers):
+            mlp = getattr(layer, "mlp", None)
+            if mlp is None or getattr(mlp, "_dflash_gate_up_packed", False):
+                continue
+            try:
+                layer.mlp = _PackedGateUpMLP(mlp)
+            except ValueError:
+                continue
+            pack_info["packed_mlp_layers"].append(layer_index)
     text_model._dflash_pack_info = pack_info
     return pack_info
 
@@ -1213,7 +1327,7 @@ def load_target_bundle(
         "kv_cache_group_size": resolved_kv_cache_group_size,
         "target_family": target_family,
     }
-    if pack_target_weights:
+    if pack_target_weights or _pack_mlp_gate_up_enabled():
         meta["packing"] = pack_target_model_weights_selective(
             model,
             validate=validate_packing,

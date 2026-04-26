@@ -25,6 +25,7 @@ def _env_int(name: str, default: int) -> int:
 
 _PROJ_TAGS = {
     "mlp.gate_proj":        "mlp_gate",
+    "mlp.gate_up_proj":     "mlp_gate_up",
     "mlp.up_proj":          "mlp_up",
     "mlp.down_proj":        "mlp_down",
     "self_attn.q_proj":     "attn_q",
@@ -65,7 +66,7 @@ def is_verify_eligible(ql: nn.QuantizedLinear, path: str = "") -> bool:
         tag = _path_tag(path)
         allowed = {s.strip() for s in include.split(",") if s.strip()}
         if "mlp" in allowed:
-            allowed.update({"mlp_gate", "mlp_up", "mlp_down"})
+            allowed.update({"mlp_gate", "mlp_gate_up", "mlp_up", "mlp_down"})
         if "attn" in allowed:
             allowed.update({"attn_q", "attn_k", "attn_v", "attn_o"})
         if "gdn" in allowed:

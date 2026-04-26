@@ -15,6 +15,7 @@ from typing import Any, Iterator
 import mlx.core as mx
 
 from dflash_mlx.runtime import (
+    configure_mlx_memory_limits,
     generate_dflash_once,
     load_draft_bundle,
     load_target_bundle,
@@ -404,10 +405,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if mx.metal.is_available():
-        wired_limit = mx.device_info()["max_recommended_working_set_size"]
-        mx.set_wired_limit(wired_limit)
-        mx.set_cache_limit(wired_limit // 4)
+    configure_mlx_memory_limits()
 
     if args.profile:
         os.environ["DFLASH_PROFILE"] = "1"

@@ -38,7 +38,7 @@ from dflash_mlx.generate import (
     resolve_optional_draft_ref,
 )
 from dflash_mlx.prompt_disk_cache import DiskBackedPromptCache
-from dflash_mlx.runtime import stream_dflash_generate
+from dflash_mlx.runtime import configure_mlx_memory_limits, stream_dflash_generate
 
 
 _STATEFUL_SERVER_API = "state" in getattr(mlx_server.Response, "__annotations__", {})
@@ -1398,10 +1398,7 @@ def main() -> None:
         os.environ["DFLASH_MAX_CTX"] = str(args.dflash_max_ctx)
     _stabilize_dflash_prompt_cache_chat_template_args(args)
 
-    if mx.metal.is_available():
-        wired_limit = mx.device_info()["max_recommended_working_set_size"]
-        mx.set_wired_limit(wired_limit)
-        mx.set_cache_limit(wired_limit // 4)
+    configure_mlx_memory_limits()
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), None),

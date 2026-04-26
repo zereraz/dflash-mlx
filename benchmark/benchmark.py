@@ -20,6 +20,7 @@ from mlx_lm import stream_generate as mlx_stream_generate
 from mlx_lm.utils import load as load_pristine_target
 
 from dflash_mlx.runtime import (
+    configure_mlx_memory_limits,
     load_draft_bundle,
     load_target_bundle,
     resolve_model_ref,
@@ -701,10 +702,7 @@ def benchmark_matrix(
 
 
 def main() -> None:
-    if mx.metal.is_available():
-        wired_limit = mx.device_info()["max_recommended_working_set_size"]
-        mx.set_wired_limit(wired_limit)
-        mx.set_cache_limit(wired_limit // 4)
+    configure_mlx_memory_limits()
     parser = argparse.ArgumentParser(description="Benchmark baseline MLX vs DFlash MLX runtime.")
     parser.add_argument("--prompt", required=True, help="Prompt to benchmark.")
     parser.add_argument("--max-tokens", type=int, default=64)
