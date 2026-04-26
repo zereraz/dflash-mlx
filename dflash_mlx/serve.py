@@ -180,6 +180,21 @@ def _build_dflash_metrics_record(
         "adaptive_fallback_min_tokens_per_cycle": summary_event.get(
             "adaptive_fallback_min_tokens_per_cycle"
         ),
+        "adaptive_fallback_cooldown_tokens": summary_event.get(
+            "adaptive_fallback_cooldown_tokens"
+        ),
+        "adaptive_fallback_reprobe_block_tokens": summary_event.get(
+            "adaptive_fallback_reprobe_block_tokens"
+        ),
+        "adaptive_fallback_count": int(
+            summary_event.get("adaptive_fallback_count", 0) or 0
+        ),
+        "adaptive_reprobe_count": int(
+            summary_event.get("adaptive_reprobe_count", 0) or 0
+        ),
+        "adaptive_current_block_tokens": summary_event.get(
+            "adaptive_current_block_tokens"
+        ),
         "phase_timings_ms": _phase_timings_ms(
             phase_timings_us,
             stable_cache_build_us=stable_cache_build_us,

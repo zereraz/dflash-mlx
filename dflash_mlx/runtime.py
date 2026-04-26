@@ -185,6 +185,26 @@ def _adaptive_fallback_min_tokens_per_cycle() -> float:
         return 3.0
 
 
+def _adaptive_fallback_cooldown_tokens() -> int:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK_COOLDOWN_TOKENS", "").strip()
+    if not raw:
+        return 64
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 64
+
+
+def _adaptive_fallback_reprobe_block_tokens() -> int:
+    raw = os.environ.get("DFLASH_ADAPTIVE_FALLBACK_REPROBE_BLOCK_TOKENS", "").strip()
+    if not raw:
+        return 4
+    try:
+        return max(2, int(raw))
+    except ValueError:
+        return 4
+
+
 def _adaptive_fallback_recent_tokens_per_cycle(
     acceptance_history: list[int],
     *,
@@ -2553,9 +2573,12 @@ def stream_dflash_generate(
             if mask_embedding_tail is not None:
                 mx.eval(mask_embedding_tail)
         generated_token_ids: list[int] = []
+        dflash_generation_tokens = 0
+        fallback_ar_generation_tokens = 0
         accepted_from_draft = 0
         cycles_completed = 0
         verify_len_cap = _resolve_verify_len_cap(target_model, effective_block_tokens)
+        current_effective_block_tokens = effective_block_tokens
         start = prompt_len
 
         draft_ns_total = 0
@@ -2573,11 +2596,19 @@ def stream_dflash_generate(
         adaptive_fallback_probe_cycles = _adaptive_fallback_probe_cycles()
         adaptive_fallback_window = _adaptive_fallback_window()
         adaptive_fallback_min_tpc = _adaptive_fallback_min_tokens_per_cycle()
+        adaptive_fallback_cooldown_tokens = _adaptive_fallback_cooldown_tokens()
+        adaptive_fallback_reprobe_block_tokens = min(
+            effective_block_tokens,
+            _adaptive_fallback_reprobe_block_tokens(),
+        )
         adaptive_fallback_triggered = False
         adaptive_fallback_cycle: Optional[int] = None
         adaptive_fallback_recent_tpc: Optional[float] = None
         adaptive_fallback_reason: Optional[str] = None
-        adaptive_fallback_dflash_tokens: Optional[int] = None
+        adaptive_fallback_count = 0
+        adaptive_reprobe_count = 0
+        adaptive_probe_start = 0
+        adaptive_block_tokens_history: list[int] = []
         cycle_profiles: list[dict[str, Any]] = []
         profile_totals_ns = {
             "draft": 0,
@@ -2608,7 +2639,11 @@ def stream_dflash_generate(
             acceptance_cycle_ns = 0
             hidden_extract_cycle_ns = 0
             remaining = max_new_tokens - len(generated_token_ids)
-            block_len = max(1, min(effective_block_tokens, remaining))
+            block_len = max(1, min(current_effective_block_tokens, remaining))
+            current_verify_len_cap = _resolve_verify_len_cap(
+                target_model,
+                current_effective_block_tokens,
+            )
             block_token_buffer[:block_len] = int(draft_model.mask_token_id)
             block_token_buffer[:1] = staged_first
             block_token_ids = block_token_buffer[:block_len]
@@ -2666,7 +2701,7 @@ def stream_dflash_generate(
                 else:
                     draft_incremental_ns += draft_cycle_ns
 
-            verify_token_count = min(block_len, verify_len_cap)
+            verify_token_count = min(block_len, current_verify_len_cap)
             if profile_cycles or block_len <= 1:
                 verify_token_ids = block_token_ids[:verify_token_count]
             elif verify_token_count <= 1:
@@ -2752,10 +2787,12 @@ def stream_dflash_generate(
             accepted_from_draft += acceptance_len
             staged_first_next = posterior[acceptance_len : acceptance_len + 1]
             should_fallback_now = False
-            if adaptive_fallback_enabled:
+            adaptive_block_tokens_history.append(int(block_len))
+            if adaptive_fallback_enabled and current_effective_block_tokens > 1:
+                adaptive_probe_history = acceptance_history[adaptive_probe_start:]
                 should_fallback_now, adaptive_fallback_recent_tpc = (
                     _should_adaptive_fallback_to_ar(
-                        acceptance_history,
+                        adaptive_probe_history,
                         probe_cycles=adaptive_fallback_probe_cycles,
                         window=adaptive_fallback_window,
                         min_tokens_per_cycle=adaptive_fallback_min_tpc,
@@ -2763,14 +2800,35 @@ def stream_dflash_generate(
                 )
                 if should_fallback_now:
                     adaptive_fallback_triggered = True
-                    adaptive_fallback_cycle = cycles_completed
+                    adaptive_fallback_count += 1
+                    if adaptive_fallback_cycle is None:
+                        adaptive_fallback_cycle = cycles_completed
                     adaptive_fallback_reason = (
                         f"recent_tokens_per_cycle={adaptive_fallback_recent_tpc:.2f} "
                         f"< {adaptive_fallback_min_tpc:.2f}"
                     )
+                elif (
+                    len(adaptive_probe_history) >= adaptive_fallback_window
+                    and current_effective_block_tokens < effective_block_tokens
+                    and adaptive_fallback_recent_tpc is not None
+                    and adaptive_fallback_recent_tpc >= adaptive_fallback_min_tpc
+                ):
+                    current_effective_block_tokens = min(
+                        effective_block_tokens,
+                        max(
+                            current_effective_block_tokens + 1,
+                            current_effective_block_tokens * 2,
+                        ),
+                    )
+                    adaptive_reprobe_count += 1
+                    adaptive_probe_start = len(acceptance_history)
+                    prefetched_draft = None
             if not profile_cycles and not should_fallback_now:
                 next_remaining = max_new_tokens - len(generated_token_ids) - commit_count
-                next_block_len = max(1, min(effective_block_tokens, next_remaining))
+                next_block_len = max(
+                    1,
+                    min(current_effective_block_tokens, next_remaining),
+                )
                 if next_remaining > 0 and next_block_len > 1:
                     draft_start_ns = time.perf_counter_ns()
                     with _dflash_stream_context():
@@ -2802,6 +2860,7 @@ def stream_dflash_generate(
                 if len(generated_token_ids) >= max_new_tokens:
                     break
                 generated_token_ids.append(token_id)
+                dflash_generation_tokens += 1
                 if first_token_yielded:
                     first_token_yielded = False
                     continue
@@ -2831,7 +2890,6 @@ def stream_dflash_generate(
                 break
 
             if should_fallback_now:
-                adaptive_fallback_dflash_tokens = len(generated_token_ids)
                 _pre_yield = time.perf_counter_ns()
                 yield {
                     "event": "adaptive_fallback",
@@ -2839,13 +2897,27 @@ def stream_dflash_generate(
                     "cycles_completed": cycles_completed,
                     "recent_tokens_per_cycle": adaptive_fallback_recent_tpc,
                     "min_tokens_per_cycle": adaptive_fallback_min_tpc,
+                    "cooldown_tokens": adaptive_fallback_cooldown_tokens,
+                    "reprobe_block_tokens": adaptive_fallback_reprobe_block_tokens,
                     "reason": adaptive_fallback_reason,
                 }
                 _yield_pause_ns += time.perf_counter_ns() - _pre_yield
 
                 next_token = int(staged_first_next.item())
-                while len(generated_token_ids) < max_new_tokens:
+                cooldown_hidden_chunks: list[mx.array] = []
+                cooldown_generated = 0
+                cooldown_stop_hit = False
+                cooldown_token_budget = min(
+                    adaptive_fallback_cooldown_tokens,
+                    max_new_tokens - len(generated_token_ids),
+                )
+                while (
+                    len(generated_token_ids) < max_new_tokens
+                    and cooldown_generated < cooldown_token_budget
+                ):
                     generated_token_ids.append(next_token)
+                    fallback_ar_generation_tokens += 1
+                    cooldown_generated += 1
                     _pre_yield = time.perf_counter_ns()
                     yield {
                         "event": "token",
@@ -2862,19 +2934,65 @@ def stream_dflash_generate(
                     }
                     _yield_pause_ns += time.perf_counter_ns() - _pre_yield
                     if next_token in stop_token_ids:
+                        cooldown_stop_hit = True
+                        break
+                    if len(generated_token_ids) >= max_new_tokens:
                         break
                     fallback_ar_start_ns = time.perf_counter_ns()
                     with _dflash_stream_context():
                         token_array = mx.array([[next_token]], dtype=mx.uint32)
-                        logits = target_model(token_array, cache=target_cache)
-                        next_token = int(
-                            greedy_tokens_with_mask(
-                                logits[:, -1, :],
-                                suppress_token_mask,
-                            ).item()
+                        ar_output, ar_hidden_states = target_forward_with_hidden_states(
+                            target_model,
+                            input_ids=token_array,
+                            cache=target_cache,
+                            capture_layer_ids=capture_layer_ids,
+                            return_normalized=use_lm_head_argmax,
+                            last_logits_only=True,
                         )
+                        if use_lm_head_argmax:
+                            ar_posterior = _lm_head_argmax(target_model, ar_output)[0]
+                        else:
+                            ar_posterior = greedy_tokens_with_mask(
+                                ar_output[:, -1, :],
+                                suppress_token_mask,
+                            )
+                        ar_hidden = extract_context_feature_from_dict(
+                            ar_hidden_states,
+                            target_layer_id_list,
+                        )
+                        if target_hidden_is_projected:
+                            ar_hidden = _project_target_feature_for_draft(
+                                draft_model,
+                                ar_hidden,
+                            )
+                        mx.eval(ar_posterior, ar_hidden)
+                        cooldown_hidden_chunks.append(mx.contiguous(ar_hidden))
+                        next_token = int(ar_posterior.item())
+                    start += 1
                     fallback_ar_ns_total += time.perf_counter_ns() - fallback_ar_start_ns
-                break
+                if cooldown_stop_hit or len(generated_token_ids) >= max_new_tokens:
+                    break
+
+                resume_hidden_parts = [target_hidden]
+                resume_hidden_parts.extend(cooldown_hidden_chunks)
+                with _dflash_stream_context():
+                    resume_hidden = mx.concatenate(resume_hidden_parts, axis=1)
+                    mx.eval(resume_hidden)
+                _finalize_draft_context_cache(
+                    draft_model=draft_model,
+                    draft_cache=draft_cache,
+                    target_hidden=resume_hidden,
+                    target_hidden_is_projected=target_hidden_is_projected,
+                    total_context_len=start,
+                )
+                target_hidden = _empty_projected_target_hidden(draft_model)
+                target_hidden_is_projected = True
+                staged_first = mx.array([next_token], dtype=mx.uint32)
+                current_effective_block_tokens = adaptive_fallback_reprobe_block_tokens
+                adaptive_probe_start = len(acceptance_history)
+                adaptive_reprobe_count += 1
+                prefetched_draft = None
+                continue
 
             staged_first = staged_first_next
 
@@ -2924,12 +3042,6 @@ def stream_dflash_generate(
         draft_tokens_attempted = sum(acceptance_position_attempts)
         first_20 = acceptance_history[:20]
         last_20 = acceptance_history[-20:]
-        dflash_generation_tokens = (
-            len(generated_token_ids)
-            if adaptive_fallback_dflash_tokens is None
-            else adaptive_fallback_dflash_tokens
-        )
-        fallback_ar_generation_tokens = len(generated_token_ids) - dflash_generation_tokens
         summary = {
             "event": "summary",
             "elapsed_us": elapsed_us,
@@ -2947,6 +3059,7 @@ def stream_dflash_generate(
                 else 0.0
             ),
             "block_tokens": effective_block_tokens,
+            "adaptive_current_block_tokens": int(current_effective_block_tokens),
             "cycles_completed": cycles_completed,
             "phase_timings_us": {
                 "prefill": prefill_ns / 1_000.0,
@@ -2970,6 +3083,9 @@ def stream_dflash_generate(
             "tokens_per_cycle": (dflash_generation_tokens / cycles_completed) if cycles_completed > 0 else 0.0,
             "dflash_generation_tokens": int(dflash_generation_tokens),
             "fallback_ar_generation_tokens": int(fallback_ar_generation_tokens),
+            "adaptive_fallback_count": int(adaptive_fallback_count),
+            "adaptive_reprobe_count": int(adaptive_reprobe_count),
+            "adaptive_block_tokens_history": list(adaptive_block_tokens_history),
             "acceptance_history": list(acceptance_history),
             "acceptance_position_attempts": list(acceptance_position_attempts),
             "acceptance_position_accepts": list(acceptance_position_accepts),
@@ -2991,6 +3107,16 @@ def stream_dflash_generate(
             ),
             "adaptive_fallback_min_tokens_per_cycle": (
                 float(adaptive_fallback_min_tpc) if adaptive_fallback_enabled else None
+            ),
+            "adaptive_fallback_cooldown_tokens": (
+                int(adaptive_fallback_cooldown_tokens)
+                if adaptive_fallback_enabled
+                else None
+            ),
+            "adaptive_fallback_reprobe_block_tokens": (
+                int(adaptive_fallback_reprobe_block_tokens)
+                if adaptive_fallback_enabled
+                else None
             ),
             "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
         }

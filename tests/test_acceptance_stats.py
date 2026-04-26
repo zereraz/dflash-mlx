@@ -1,6 +1,8 @@
 from dflash_mlx.runtime import (
     _acceptance_position_rates,
+    _adaptive_fallback_cooldown_tokens,
     _adaptive_fallback_recent_tokens_per_cycle,
+    _adaptive_fallback_reprobe_block_tokens,
     _record_acceptance_position_stats,
     _should_adaptive_fallback_to_ar,
 )
@@ -76,3 +78,11 @@ def test_adaptive_fallback_keeps_good_recent_cycles():
 
     assert not should_fallback
     assert recent_tpc == 7.0
+
+
+def test_adaptive_fallback_cooldown_env(monkeypatch):
+    monkeypatch.setenv("DFLASH_ADAPTIVE_FALLBACK_COOLDOWN_TOKENS", "32")
+    monkeypatch.setenv("DFLASH_ADAPTIVE_FALLBACK_REPROBE_BLOCK_TOKENS", "8")
+
+    assert _adaptive_fallback_cooldown_tokens() == 32
+    assert _adaptive_fallback_reprobe_block_tokens() == 8

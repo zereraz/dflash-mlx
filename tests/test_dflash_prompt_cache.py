@@ -452,6 +452,11 @@ def test_build_dflash_metrics_record_adjusts_stable_cache_time():
             "adaptive_fallback_ar": True,
             "adaptive_fallback_cycle": 2,
             "adaptive_fallback_recent_tokens_per_cycle": 2.5,
+            "adaptive_fallback_count": 1,
+            "adaptive_reprobe_count": 1,
+            "adaptive_current_block_tokens": 4,
+            "adaptive_fallback_cooldown_tokens": 64,
+            "adaptive_fallback_reprobe_block_tokens": 4,
             "dflash_generation_tokens": 3,
             "fallback_ar_generation_tokens": 1,
         },
@@ -478,6 +483,11 @@ def test_build_dflash_metrics_record_adjusts_stable_cache_time():
     assert record["adaptive_fallback_ar"]
     assert record["adaptive_fallback_cycle"] == 2
     assert record["adaptive_fallback_recent_tokens_per_cycle"] == 2.5
+    assert record["adaptive_fallback_count"] == 1
+    assert record["adaptive_reprobe_count"] == 1
+    assert record["adaptive_current_block_tokens"] == 4
+    assert record["adaptive_fallback_cooldown_tokens"] == 64
+    assert record["adaptive_fallback_reprobe_block_tokens"] == 4
     assert record["dflash_generation_tokens"] == 3
     assert record["fallback_ar_generation_tokens"] == 1
 
