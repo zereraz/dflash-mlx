@@ -783,6 +783,55 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                     finish_reason = "stop"
                             else:
                                 finish_reason = "stop"
+                        elif event.get("event") == "adaptive_fallback":
+                            elapsed_s = (time.perf_counter_ns() - request_start_ns) / 1e9
+                            fallback_generated_tokens = int(
+                                event.get("generated_tokens", live_token_count) or 0
+                            )
+                            fallback_decode_tps = fallback_generated_tokens / max(
+                                0.001,
+                                elapsed_s - prefill_elapsed_s,
+                            )
+                            recent_tpc = float(
+                                event.get("recent_tokens_per_cycle", 0.0) or 0.0
+                            )
+                            min_tpc = float(
+                                event.get("min_tokens_per_cycle", 0.0) or 0.0
+                            )
+                            sys.stderr.write(
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] adaptive fallback: "
+                                f"decode: {fallback_decode_tps:.1f} tok/s | "
+                                f"{fallback_generated_tokens} tokens | "
+                                f"{int(event.get('cycles_completed', 0) or 0)} cycles | "
+                                f"recent {recent_tpc:.1f} tok/cycle < {min_tpc:.1f} | "
+                                f"cooldown {int(event.get('cooldown_tokens', 0) or 0)} tokens | "
+                                f"reprobe block {int(event.get('reprobe_block_tokens', 0) or 0)}\n"
+                            )
+                            sys.stderr.flush()
+                            _append_dflash_metrics_event(
+                                cli_args,
+                                {
+                                    "event": "adaptive_fallback",
+                                    "request_id": request_id,
+                                    "prompt_tokens": len(prompt),
+                                    "cached_prompt_tokens": prompt_cache_count,
+                                    "generated_tokens": fallback_generated_tokens,
+                                    "elapsed_ms": elapsed_s * 1_000.0,
+                                    "decode_tps": fallback_decode_tps,
+                                    "cycles_completed": int(
+                                        event.get("cycles_completed", 0) or 0
+                                    ),
+                                    "recent_tokens_per_cycle": recent_tpc,
+                                    "min_tokens_per_cycle": min_tpc,
+                                    "cooldown_tokens": int(
+                                        event.get("cooldown_tokens", 0) or 0
+                                    ),
+                                    "reprobe_block_tokens": int(
+                                        event.get("reprobe_block_tokens", 0) or 0
+                                    ),
+                                    "reason": event.get("reason"),
+                                },
+                            )
                         continue
 
                     token = int(event["token_id"])
@@ -813,7 +862,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                         )
                     if live_token_count % 2048 == 0:
                         sys.stderr.write(
-                            f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] {live_tok_s:.1f} tok/s | {live_acceptance_pct:.1f}% accepted | "
+                            f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] decode: {live_tok_s:.1f} tok/s | {live_acceptance_pct:.1f}% accepted | "
                             f"{live_token_count} tokens | {elapsed_s:.1f}s | "
                             f"prompt: {live_prompt_len} tokens\n"
                         )
@@ -909,7 +958,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 )
                 total_s = elapsed_us / 1_000_000.0
                 sys.stderr.write(
-                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] {tok_s:.1f} tok/s | {acceptance_pct:.1f}% accepted | "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] decode: {tok_s:.1f} tok/s | {acceptance_pct:.1f}% accepted | "
                     f"draft_accept {draft_acceptance_pct:.1f}% | "
                     f"{cycles_completed} cycles | {tokens_per_cycle:.1f} tok/cycle | "
                     f"{generation_tokens} tokens | {total_s:.1f}s | "
