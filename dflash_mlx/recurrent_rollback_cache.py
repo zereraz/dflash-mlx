@@ -43,6 +43,17 @@ class RecurrentRollbackCache(_BaseCache):
     def state(self, value) -> None:
         self.cache = value
 
+    @property
+    def meta_state(self) -> tuple[str, str]:
+        return (str(len(self.cache)), str(self.conv_kernel_size))
+
+    @meta_state.setter
+    def meta_state(self, value) -> None:
+        size, conv_kernel_size = value
+        if not hasattr(self, "cache") or self.cache is None:
+            self.cache = [None] * int(size)
+        self.conv_kernel_size = int(conv_kernel_size)
+
     def filter(self, batch_indices):
         self.cache = [c[batch_indices] if c is not None else None for c in self.cache]
         if self.lengths is not None:

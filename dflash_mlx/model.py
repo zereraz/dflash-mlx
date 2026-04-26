@@ -87,6 +87,38 @@ class ContextOnlyDraftKVCache:
         return False
 
     @property
+    def state(self):
+        if self.keys is None or self.values is None:
+            return []
+        return [self.keys, self.values]
+
+    @state.setter
+    def state(self, value) -> None:
+        if not value:
+            self.keys = None
+            self.values = None
+            return
+        self.keys, self.values = value
+
+    @property
+    def meta_state(self) -> tuple[str, str, str]:
+        return (str(self.sink_size), str(self.window_size), str(self.offset))
+
+    @meta_state.setter
+    def meta_state(self, value) -> None:
+        sink_size, window_size, offset = value
+        self.sink_size = int(sink_size)
+        self.window_size = int(window_size)
+        self.offset = int(offset)
+
+    @classmethod
+    def from_state(cls, state, meta_state):
+        cache = cls()
+        cache.meta_state = meta_state
+        cache.state = state
+        return cache
+
+    @property
     def nbytes(self) -> int:
         total = 0
         if self.keys is not None:

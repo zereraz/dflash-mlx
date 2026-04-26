@@ -37,12 +37,14 @@ from dflash_mlx.generate import (
     load_runtime_components,
     resolve_optional_draft_ref,
 )
+from dflash_mlx.prompt_disk_cache import DiskBackedPromptCache
 from dflash_mlx.runtime import stream_dflash_generate
 
 
 _STATEFUL_SERVER_API = "state" in getattr(mlx_server.Response, "__annotations__", {})
 _METRICS_LOG_ENV = "DFLASH_METRICS_LOG"
 _METRICS_TOKEN_INTERVAL_ENV = "DFLASH_METRICS_TOKEN_INTERVAL"
+_PROMPT_CACHE_DIR_ENV = "DFLASH_PROMPT_CACHE_DIR"
 _METRICS_LOG_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,37 @@ def _dflash_metrics_token_interval() -> int:
         return max(0, int(raw_value))
     except ValueError:
         return 128
+
+
+def _dflash_prompt_cache_dir(cli_args: Any) -> Optional[str]:
+    path = getattr(cli_args, "dflash_prompt_cache_dir", None)
+    if path is None or str(path).strip() == "":
+        path = os.environ.get(_PROMPT_CACHE_DIR_ENV, "").strip()
+    if path is None or str(path).strip() == "":
+        return None
+    return os.path.expanduser(str(path))
+
+
+def _kv_cache_bits(cli_args: Any) -> int:
+    return int(getattr(cli_args, "kv_cache_bits", 8) or 8)
+
+
+def _kv_cache_group_size(cli_args: Any) -> int:
+    return int(getattr(cli_args, "kv_cache_group_size", 64) or 64)
+
+
+def _dflash_model_key(
+    model_ref: str,
+    resolved_draft_ref: Optional[str],
+    cli_args: Any,
+) -> tuple[Any, Any, Any]:
+    kv_cache_config = (
+        "target_kv",
+        bool(getattr(cli_args, "quantize_kv_cache", False)),
+        _kv_cache_bits(cli_args),
+        _kv_cache_group_size(cli_args),
+    )
+    return (model_ref, kv_cache_config, resolved_draft_ref)
 
 
 def _phase_timings_ms(
@@ -144,6 +177,8 @@ def _build_dflash_metrics_record(
         "verify_chunk_tokens": summary_event.get("verify_chunk_tokens"),
         "prefill_step_size": summary_event.get("prefill_step_size"),
         "quantize_kv_cache": bool(summary_event.get("quantize_kv_cache", False)),
+        "kv_cache_bits": summary_event.get("kv_cache_bits"),
+        "kv_cache_group_size": summary_event.get("kv_cache_group_size"),
         "speculative_linear_cache": bool(
             summary_event.get("speculative_linear_cache", False)
         ),
@@ -157,6 +192,7 @@ def _build_dflash_metrics_record(
         "prefill_context_tokens": int(
             summary_event.get("prefill_context_tokens", 0) or 0
         ),
+        "cache_only_prefill": bool(summary_event.get("cache_only_prefill", False)),
         "dflash_generation_tokens": int(
             summary_event.get("dflash_generation_tokens", generation_tokens) or 0
         ),
@@ -292,6 +328,7 @@ def _dflash_server_prompt_cache_enabled() -> bool:
 def _use_dflash_prompt_cache(cli_args: Any) -> bool:
     return bool(
         getattr(cli_args, "dflash_prompt_cache", False)
+        or _dflash_prompt_cache_dir(cli_args) is not None
     ) or _dflash_server_prompt_cache_enabled()
 
 
@@ -311,6 +348,25 @@ def _stabilize_dflash_prompt_cache_chat_template_args(cli_args: Any) -> None:
             **chat_template_args,
             "preserve_thinking": True,
         }
+
+
+def _auto_dflash_prefill_step_size(prompt_len: int) -> int:
+    _ = prompt_len
+    # Hardware note: on this 40-core M3 Max / applegpu_g15s machine, real
+    # Pi Mono 10k-token cache-export sweeps put 1024 and 2048-token chunks
+    # within noise, so keep the simpler MLX-friendly default.
+    return 2048
+
+
+def _resolve_dflash_prefill_step_size(cli_args: Any, prompt_len: int) -> int:
+    raw_value = getattr(cli_args, "prefill_step_size", 0)
+    try:
+        requested = int(raw_value or 0)
+    except (TypeError, ValueError):
+        requested = 0
+    if requested > 0:
+        return requested
+    return _auto_dflash_prefill_step_size(prompt_len)
 
 
 def _read_project_version() -> str:
@@ -346,8 +402,9 @@ class DFlashModelProvider(mlx_server.ModelProvider):
         else:
             draft_ref = None
         resolved_draft_ref = resolve_optional_draft_ref(model_ref, draft_ref)
+        model_key = _dflash_model_key(model_ref, resolved_draft_ref, self.cli_args)
 
-        if self.model_key == (model_ref, None, resolved_draft_ref):
+        if self.model_key == model_key:
             return self.model, self.tokenizer
 
         self.model = None
@@ -359,7 +416,10 @@ class DFlashModelProvider(mlx_server.ModelProvider):
             model_ref=model_ref,
             draft_ref=draft_ref,
             quantize_kv_cache=getattr(self.cli_args, "quantize_kv_cache", False),
+            kv_cache_bits=_kv_cache_bits(self.cli_args),
+            kv_cache_group_size=_kv_cache_group_size(self.cli_args),
         )
+        model_key = _dflash_model_key(model_ref, resolved_draft_ref, self.cli_args)
 
         if self.cli_args.chat_template:
             tokenizer.chat_template = self.cli_args.chat_template
@@ -369,7 +429,7 @@ class DFlashModelProvider(mlx_server.ModelProvider):
         self.model = model
         self.tokenizer = tokenizer
         self.draft_model = draft_model
-        self.model_key = (model_ref, None, resolved_draft_ref)
+        self.model_key = model_key
         self.is_batchable = False
         return self.model, self.tokenizer
 
@@ -521,6 +581,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
             use_dflash_prompt_cache = _use_dflash_prompt_cache(
                 self.model_provider.cli_args
             )
+            prefill_step_size = _resolve_dflash_prefill_step_size(cli_args, len(prompt))
             using_stable_prompt_cache = False
             if use_dflash_prompt_cache:
                 stable_prompt, active_prompt_tail = _select_dflash_stable_prompt_prefix(
@@ -564,10 +625,13 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                 "quantize_kv_cache",
                                 False,
                             ),
-                            prefill_step_size=getattr(
-                                self.model_provider.cli_args,
-                                "prefill_step_size",
-                                2048,
+                            kv_cache_bits=_kv_cache_bits(self.model_provider.cli_args),
+                            kv_cache_group_size=_kv_cache_group_size(
+                                self.model_provider.cli_args
+                            ),
+                            prefill_step_size=_resolve_dflash_prefill_step_size(
+                                cli_args,
+                                len(stable_prompt),
                             ),
                             block_tokens=getattr(
                                 self.model_provider.cli_args,
@@ -683,10 +747,12 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     "using_stable_prompt_cache": bool(using_stable_prompt_cache),
                     "max_tokens": int(args.max_tokens),
                     "block_tokens": getattr(cli_args, "block_tokens", None),
-                    "prefill_step_size": getattr(cli_args, "prefill_step_size", 2048),
+                    "prefill_step_size": prefill_step_size,
                     "quantize_kv_cache": bool(
                         getattr(cli_args, "quantize_kv_cache", False)
                     ),
+                    "kv_cache_bits": _kv_cache_bits(cli_args),
+                    "kv_cache_group_size": _kv_cache_group_size(cli_args),
                 },
             )
 
@@ -700,13 +766,13 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 stop_token_ids=stop_token_ids,
                 prompt_tokens_override=prompt_rest,
                 quantize_kv_cache=getattr(cli_args, "quantize_kv_cache", False),
-                prefill_step_size=getattr(cli_args, "prefill_step_size", 2048),
+                kv_cache_bits=_kv_cache_bits(cli_args),
+                kv_cache_group_size=_kv_cache_group_size(cli_args),
+                prefill_step_size=prefill_step_size,
                 block_tokens=getattr(cli_args, "block_tokens", None),
                 prompt_cache=prompt_cache,
                 prompt_cache_count=prompt_cache_count,
-                return_prompt_cache=(
-                    use_dflash_prompt_cache and not using_stable_prompt_cache
-                ),
+                return_prompt_cache=use_dflash_prompt_cache,
             )
 
             try:
@@ -981,7 +1047,6 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 if (
                     use_dflash_prompt_cache
                     and returned_prompt_cache is not None
-                    and not using_stable_prompt_cache
                 ):
                     generated_token_ids = list(
                         summary_event.get("generated_token_ids", []) or []
@@ -990,6 +1055,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                         self.model_provider.model_key,
                         prompt + [int(token_id) for token_id in generated_token_ids],
                         returned_prompt_cache,
+                        cache_type="user" if using_stable_prompt_cache else "assistant",
                     )
 
             rqueue.put(None)
@@ -1075,6 +1141,24 @@ def _run_with_dflash_server(host: str, port: int, model_provider: DFlashModelPro
     if model_provider.cli_args.model is not None:
         model_provider.load("default_model", None, "default_model")
     prompt_cache = mlx_server.LRUPromptCache(model_provider.cli_args.prompt_cache_size)
+    disk_cache_dir = _dflash_prompt_cache_dir(model_provider.cli_args)
+    if disk_cache_dir is not None:
+        prompt_cache = DiskBackedPromptCache(
+            prompt_cache,
+            directory=disk_cache_dir,
+            ttl_seconds=max(
+                0.0,
+                float(model_provider.cli_args.dflash_prompt_cache_ttl_days),
+            )
+            * 24
+            * 60
+            * 60,
+            max_bytes=(
+                int(float(model_provider.cli_args.dflash_prompt_cache_max_disk_gb) * 1e9)
+                if model_provider.cli_args.dflash_prompt_cache_max_disk_gb
+                else None
+            ),
+        )
     response_generator = DFlashResponseGenerator(model_provider, prompt_cache)
     if group.rank() == 0:
         _print_startup_banner(port=port, model_provider=model_provider)
@@ -1217,7 +1301,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--prefill-step-size",
         type=int,
-        default=2048,
+        default=0,
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
@@ -1229,7 +1313,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--quantize-kv-cache",
         action="store_true",
-        help="Quantize KV cache to 8-bit (reduces memory for long contexts)",
+        help="Quantize target full-attention KV cache for long contexts.",
+    )
+    parser.add_argument(
+        "--kv-cache-bits",
+        type=int,
+        default=8,
+        choices=(2, 4, 8),
+        help=(
+            "Bits for --quantize-kv-cache. Q8 is the measured safe default; "
+            "Q4 is experimental and should be checked with evals."
+        ),
+    )
+    parser.add_argument(
+        "--kv-cache-group-size",
+        type=int,
+        default=64,
+        choices=(32, 64, 128),
+        help="Quantization group size for --quantize-kv-cache.",
     )
     parser.add_argument(
         "--dflash-prompt-cache",
@@ -1238,6 +1339,27 @@ def _build_parser() -> argparse.ArgumentParser:
             "Reuse DFlash target/draft prompt caches across requests. "
             "Use --prompt-cache-size 1 for long single-chat sessions."
         ),
+    )
+    parser.add_argument(
+        "--dflash-prompt-cache-dir",
+        type=str,
+        default=None,
+        help=(
+            "Persist DFlash prompt caches to this directory. "
+            f"Can also be set with {_PROMPT_CACHE_DIR_ENV}."
+        ),
+    )
+    parser.add_argument(
+        "--dflash-prompt-cache-ttl-days",
+        type=float,
+        default=7.0,
+        help="Delete disk prompt caches not used for this many days. 0 disables TTL cleanup.",
+    )
+    parser.add_argument(
+        "--dflash-prompt-cache-max-disk-gb",
+        type=float,
+        default=0.0,
+        help="Maximum disk prompt-cache size in GB. 0 disables size cleanup.",
     )
     parser.add_argument(
         "--dflash-metrics-log",

@@ -8,8 +8,15 @@ from types import SimpleNamespace
 
 import mlx.core as mx
 import pytest
+from mlx_lm.models.cache import KVCache, QuantizedKVCache
 
 from dflash_mlx.model import ContextOnlyDraftKVCache
+from dflash_mlx.prompt_disk_cache import (
+    DiskBackedPromptCache,
+    load_dflash_prompt_cache,
+    save_dflash_prompt_cache,
+)
+from dflash_mlx.recurrent_rollback_cache import RecurrentRollbackCache
 from dflash_mlx.runtime import (
     _combined_dflash_prompt_cache,
     _context_cache_offset,
@@ -18,6 +25,7 @@ from dflash_mlx.runtime import (
     _require_non_empty_prompt_tokens,
     _split_dflash_prompt_cache,
     extract_context_feature_range_from_dict,
+    make_target_cache,
     target_prefill_without_logits,
     target_forward_with_hidden_states,
 )
@@ -26,6 +34,7 @@ from dflash_mlx.serve import (
     _build_dflash_metrics_record,
     _dflash_server_prompt_cache_enabled,
     _fetch_dflash_prompt_cache,
+    _resolve_dflash_prefill_step_size,
     _select_dflash_stable_prompt_prefix,
     _stabilize_dflash_prompt_cache_chat_template_args,
     _state_machine_is_terminal,
@@ -36,6 +45,23 @@ from dflash_mlx.serve import (
 class _Target:
     def __init__(self, n_layers: int):
         self.model = SimpleNamespace(layers=[object() for _ in range(n_layers)])
+
+
+def test_make_target_cache_uses_configured_quantized_kv_bits():
+    target = SimpleNamespace(model=SimpleNamespace(layers=[SimpleNamespace()]))
+
+    caches = make_target_cache(
+        target,
+        enable_speculative_linear_cache=False,
+        quantize_kv_cache=True,
+        kv_cache_bits=4,
+        kv_cache_group_size=128,
+    )
+
+    assert len(caches) == 1
+    assert isinstance(caches[0], QuantizedKVCache)
+    assert caches[0].bits == 4
+    assert caches[0].group_size == 128
 
 
 def test_split_and_combine_dflash_prompt_cache_preserves_layout():
@@ -80,6 +106,50 @@ def test_context_cache_offset_uses_minimum_layer_offset():
     caches[1].offset = 9
 
     assert _context_cache_offset(caches) == 9
+
+
+def test_dflash_prompt_cache_serializer_round_trips_context_cache(tmp_path):
+    keys = mx.arange(24, dtype=mx.float16).reshape(1, 2, 3, 4)
+    values = mx.arange(100, 124, dtype=mx.float16).reshape(1, 2, 3, 4)
+    cache = ContextOnlyDraftKVCache(sink_size=2, window_size=8)
+    cache.set_context(keys, values, offset=11)
+
+    path = tmp_path / "cache.safetensors"
+    save_dflash_prompt_cache(path, [cache], {"kind": "unit"})
+    loaded, metadata = load_dflash_prompt_cache(path)
+
+    assert metadata["kind"] == "unit"
+    assert len(loaded) == 1
+    loaded_cache = loaded[0]
+    assert isinstance(loaded_cache, ContextOnlyDraftKVCache)
+    assert loaded_cache.sink_size == 2
+    assert loaded_cache.window_size == 8
+    assert loaded_cache.offset == 11
+    assert mx.array_equal(loaded_cache.keys, keys).item()
+    assert mx.array_equal(loaded_cache.values, values).item()
+
+
+def test_dflash_prompt_cache_serializer_round_trips_combined_cache(tmp_path):
+    kv = KVCache()
+    kv_keys = mx.ones((1, 1, 2, 2), dtype=mx.float16)
+    kv_values = mx.zeros((1, 1, 2, 2), dtype=mx.float16)
+    kv.update_and_fetch(kv_keys, kv_values)
+
+    recurrent = RecurrentRollbackCache(size=2, conv_kernel_size=5)
+    recurrent[0] = mx.ones((1, 4, 3), dtype=mx.float16)
+    recurrent[1] = mx.zeros((1, 3), dtype=mx.float32)
+
+    path = tmp_path / "combined.safetensors"
+    save_dflash_prompt_cache(path, [kv, recurrent], {})
+    loaded, _ = load_dflash_prompt_cache(path)
+
+    assert isinstance(loaded[0], KVCache)
+    assert loaded[0].offset == 2
+    assert mx.array_equal(loaded[0].keys, kv_keys).item()
+    assert isinstance(loaded[1], RecurrentRollbackCache)
+    assert loaded[1].conv_kernel_size == 5
+    assert mx.array_equal(loaded[1][0], recurrent[0]).item()
+    assert mx.array_equal(loaded[1][1], recurrent[1]).item()
 
 
 def test_iter_uncached_prefill_chunks_tracks_absolute_prompt_positions():
@@ -220,6 +290,69 @@ def test_fetch_dflash_prompt_cache_disables_exact_hit_without_suffix():
     assert prompt_cache is None
     assert prompt_rest is prompt
     assert prompt_cache_count == 0
+
+
+def test_disk_backed_prompt_cache_reuses_longest_saved_prefix(tmp_path):
+    model_key = ("target", None, "draft")
+    keys = mx.ones((1, 1, 2, 2), dtype=mx.float16)
+    values = mx.zeros((1, 1, 2, 2), dtype=mx.float16)
+    cache = ContextOnlyDraftKVCache()
+    cache.set_context(keys, values, offset=3)
+
+    writer_memory = _RecordingPromptCacheStore()
+    writer = DiskBackedPromptCache(
+        writer_memory,
+        directory=tmp_path,
+        ttl_seconds=60,
+    )
+    writer.insert_cache(model_key, [1, 2, 3], [cache], cache_type="user")
+
+    reader_memory = _RecordingPromptCacheStore()
+    reader = DiskBackedPromptCache(
+        reader_memory,
+        directory=tmp_path,
+        ttl_seconds=60,
+    )
+    prompt_cache, rest = reader.fetch_nearest_cache(model_key, [1, 2, 3, 4, 5])
+
+    assert rest == [4, 5]
+    assert prompt_cache is not None
+    assert isinstance(prompt_cache[0], ContextOnlyDraftKVCache)
+    assert prompt_cache[0] is not cache
+    assert mx.array_equal(prompt_cache[0].keys, keys).item()
+    assert reader_memory.inserts[-1][0] == model_key
+    assert reader_memory.inserts[-1][1] == [1, 2, 3]
+    assert reader_memory.inserts[-1][3] == "user"
+
+
+def test_disk_backed_prompt_cache_deletes_stale_entries(tmp_path):
+    model_key = ("target", None, "draft")
+    cache = ContextOnlyDraftKVCache()
+    cache.set_context(
+        mx.ones((1, 1, 1, 1), dtype=mx.float16),
+        mx.ones((1, 1, 1, 1), dtype=mx.float16),
+        offset=1,
+    )
+    store = DiskBackedPromptCache(
+        _RecordingPromptCacheStore(),
+        directory=tmp_path,
+        ttl_seconds=60,
+    )
+    store.insert_cache(model_key, [1], [cache], cache_type="assistant")
+
+    sidecar = next(tmp_path.glob("*.json"))
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata["created_at"] = 0
+    metadata["accessed_at"] = 0
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+
+    DiskBackedPromptCache(
+        _RecordingPromptCacheStore(),
+        directory=tmp_path,
+        ttl_seconds=1,
+    )
+
+    assert list(tmp_path.glob("*")) == []
 
 
 def test_select_dflash_stable_prompt_prefix_excludes_assistant_tail():
@@ -371,9 +504,15 @@ def test_serve_single_builds_stable_prompt_cache_before_tail(monkeypatch):
     assert calls[1]["prompt_tokens_override"] == [5, 6]
     assert calls[1]["prompt_cache"] == ["stable-cache"]
     assert calls[1]["prompt_cache_count"] == 4
-    assert not calls[1]["return_prompt_cache"]
+    assert calls[1]["return_prompt_cache"]
     assert response_generator.prompt_cache.inserts == [
-        (("target", None, "draft"), [1, 2, 3, 4], ["stable-cache"], "user")
+        (("target", None, "draft"), [1, 2, 3, 4], ["stable-cache"], "user"),
+        (
+            ("target", None, "draft"),
+            [1, 2, 3, 4, 5, 6, 9],
+            ["mutated-main-cache"],
+            "user",
+        ),
     ]
     assert queue.items[-1] is None
 
@@ -393,6 +532,21 @@ def test_dflash_prompt_cache_can_be_enabled_by_cli_flag(monkeypatch):
     monkeypatch.delenv("DFLASH_SERVER_PROMPT_CACHE", raising=False)
     assert _use_dflash_prompt_cache(SimpleNamespace(dflash_prompt_cache=True))
     assert not _use_dflash_prompt_cache(SimpleNamespace(dflash_prompt_cache=False))
+
+
+def test_auto_prefill_step_size_keeps_measured_default_for_long_context():
+    assert _resolve_dflash_prefill_step_size(
+        SimpleNamespace(prefill_step_size=0),
+        10_000,
+    ) == 2048
+    assert _resolve_dflash_prefill_step_size(
+        SimpleNamespace(prefill_step_size=0),
+        1_000,
+    ) == 2048
+    assert _resolve_dflash_prefill_step_size(
+        SimpleNamespace(prefill_step_size=2048),
+        10_000,
+    ) == 2048
 
 
 def test_dflash_prompt_cache_stabilizes_qwen_thinking_template(monkeypatch):
@@ -601,3 +755,47 @@ def test_target_prefill_without_logits_skips_lm_head_projection():
 
     assert hidden.shape == (1, 3, 3)
     assert target.lm_head.input_shapes == []
+
+
+def test_stream_cache_only_prefill_skips_final_lm_head_projection(monkeypatch):
+    from dflash_mlx import runtime as runtime_mod
+
+    class _FakeDraftBackend:
+        def make_cache(self, **kwargs):
+            del kwargs
+            return [None]
+
+    monkeypatch.setattr(runtime_mod, "make_draft_backend", lambda: _FakeDraftBackend())
+    monkeypatch.setattr(runtime_mod, "make_target_cache", lambda *args, **kwargs: [None])
+    monkeypatch.setattr(runtime_mod, "detect_engine", lambda target_model: object())
+    monkeypatch.setattr(runtime_mod, "_clear_cache_after_prefill_enabled", lambda: False)
+
+    target = _FakeTarget()
+    draft_model = SimpleNamespace(
+        target_layer_ids=[0],
+        block_size=4,
+        mask_token_id=0,
+        args=SimpleNamespace(hidden_size=3),
+    )
+
+    events = list(
+        runtime_mod.stream_dflash_generate(
+            target_model=target,
+            tokenizer=None,
+            draft_model=draft_model,
+            prompt="",
+            max_new_tokens=0,
+            prompt_tokens_override=[1, 2, 3],
+            prefill_step_size=2,
+        )
+    )
+
+    assert target.lm_head.input_shapes == []
+    assert [event["event"] for event in events] == [
+        "prefill_progress",
+        "prefill_progress",
+        "prefill",
+        "summary",
+    ]
+    assert events[-1]["generation_tokens"] == 0
+    assert events[-1]["cache_only_prefill"]

@@ -14,7 +14,12 @@ from typing import Any, Iterator
 
 import mlx.core as mx
 
-from dflash_mlx.runtime import generate_dflash_once, load_draft_bundle, load_target_bundle
+from dflash_mlx.runtime import (
+    generate_dflash_once,
+    load_draft_bundle,
+    load_target_bundle,
+    stream_dflash_generate,
+)
 
 
 DEFAULT_PROMPT = (
@@ -25,6 +30,13 @@ DEFAULT_PROMPT = (
 
 SCENARIOS: dict[str, dict[str, Any]] = {
     "auto_b16": {"env": {"DFLASH_VERIFY_VARIANT": "auto"}, "block_tokens": 16},
+    "adaptive_b16": {
+        "env": {
+            "DFLASH_VERIFY_VARIANT": "auto",
+            "DFLASH_ADAPTIVE_FALLBACK": "1",
+        },
+        "block_tokens": 16,
+    },
     "prefill_clear_b16": {
         "env": {
             "DFLASH_VERIFY_VARIANT": "auto",
@@ -196,8 +208,13 @@ def _compact_result(
         "run": int(run_index),
         "block_tokens": int(result.get("block_tokens", scenario.get("block_tokens", 0)) or 0),
         "prefill_step_size": int(result.get("prefill_step_size", 0) or 0),
+        "quantize_kv_cache": bool(result.get("quantize_kv_cache", False)),
+        "kv_cache_bits": int(result.get("kv_cache_bits", 0) or 0),
+        "kv_cache_group_size": int(result.get("kv_cache_group_size", 0) or 0),
         "prompt_tokens": int(result.get("prompt_token_count", 0) or 0),
         "generation_tokens": int(result.get("generation_tokens", 0) or 0),
+        "cache_only_prefill": bool(result.get("cache_only_prefill", False)),
+        "returned_prompt_cache": "prompt_cache" in result,
         "elapsed_ms": float(result.get("elapsed_us", 0.0)) / 1_000.0,
         "prefill_ms": _phase_ms(result, "prefill"),
         "draft_ms": _phase_ms(result, "draft"),
@@ -214,6 +231,8 @@ def _compact_result(
         "acceptance_position_rates": list(result.get("acceptance_position_rates", [])),
         "tokens_per_cycle": float(result.get("tokens_per_cycle", 0.0) or 0.0),
         "cycles": int(result.get("cycles_completed", 0) or 0),
+        "adaptive_fallback_ar": bool(result.get("adaptive_fallback_ar", False)),
+        "adaptive_fallback_count": int(result.get("adaptive_fallback_count", 0) or 0),
         "profile_totals_ms": _profile_totals_ms(result),
     }
 
@@ -225,10 +244,22 @@ def _print_row(row: dict[str, Any]) -> None:
         f"decode={row['decode_tps']:.2f} tok/s "
         f"accept={row['acceptance_ratio'] * 100:.1f}% "
         f"draft_accept={row['draft_acceptance_ratio'] * 100:.1f}% "
+        f"cache={'yes' if row['returned_prompt_cache'] else 'no'} "
+        f"fallback={row['adaptive_fallback_count']} "
         f"draft={row['draft_ms']:.1f}ms verify={row['verify_ms']:.1f}ms "
         f"cycles={row['cycles']}",
         flush=True,
     )
+
+
+def _consume_stream_summary(iterator: Iterator[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] | None = None
+    for event in iterator:
+        if event.get("event") == "summary":
+            summary = event
+    if summary is None:
+        raise RuntimeError("stream_dflash_generate did not produce a summary event")
+    return summary
 
 
 def _normalize_capture_path(path: str | Path) -> Path:
@@ -293,9 +324,19 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--draft", required=True)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
+    parser.add_argument(
+        "--prompt-file",
+        default=None,
+        help="Read benchmark prompt text from a file before truncating to --prompt-tokens.",
+    )
     parser.add_argument("--prompt-tokens", type=int, default=4096)
     parser.add_argument("--max-tokens", type=int, default=96)
     parser.add_argument("--prefill-step-size", type=int, default=2048)
+    parser.add_argument(
+        "--prefill-step-sizes",
+        default=None,
+        help="Comma-separated prefill step sizes to sweep using the same loaded models.",
+    )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument(
         "--scenarios",
@@ -313,6 +354,37 @@ def main() -> None:
         "--quantize-kv-cache",
         action="store_true",
         help="Use quantized target full-attention KV cache during DFlash runs.",
+    )
+    parser.add_argument(
+        "--kv-cache-bits",
+        type=int,
+        default=8,
+        choices=(2, 4, 8),
+        help="Bits for --quantize-kv-cache.",
+    )
+    parser.add_argument(
+        "--kv-cache-group-size",
+        type=int,
+        default=64,
+        choices=(32, 64, 128),
+        help="Quantization group size for --quantize-kv-cache.",
+    )
+    parser.add_argument(
+        "--return-prompt-cache",
+        action="store_true",
+        help=(
+            "Use the streaming path and export the DFlash prompt cache. "
+            "This matches the server's --dflash-prompt-cache cache-build cost."
+        ),
+    )
+    parser.add_argument(
+        "--reuse-suffix-tokens",
+        type=int,
+        default=0,
+        help=(
+            "After a --return-prompt-cache run, immediately reuse that cache "
+            "with this many additional prompt tokens."
+        ),
     )
     parser.add_argument("--cooldown", type=float, default=0.0)
     parser.add_argument(
@@ -340,15 +412,37 @@ def main() -> None:
     if args.profile:
         os.environ["DFLASH_PROFILE"] = "1"
 
+    prompt_text = args.prompt
+    if args.prompt_file:
+        prompt_text = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
+
     target_model, tokenizer, _ = load_target_bundle(
         args.model,
         lazy=True,
         split_full_attention_sdpa=bool(args.split_sdpa),
         quantize_kv_cache=bool(args.quantize_kv_cache),
+        kv_cache_bits=int(args.kv_cache_bits),
+        kv_cache_group_size=int(args.kv_cache_group_size),
     )
     draft_model, _ = load_draft_bundle(args.draft, lazy=True)
-    prompt_tokens = _target_prompt_tokens(tokenizer, args.prompt_tokens, args.prompt)
+    prompt_tokens = _target_prompt_tokens(tokenizer, args.prompt_tokens, prompt_text)
+    reuse_suffix_tokens: list[int] = []
+    if int(args.reuse_suffix_tokens) > 0:
+        reuse_prompt_tokens = _target_prompt_tokens(
+            tokenizer,
+            args.prompt_tokens + int(args.reuse_suffix_tokens),
+            prompt_text,
+        )
+        reuse_suffix_tokens = reuse_prompt_tokens[len(prompt_tokens) :]
     scenario_names = [name.strip() for name in args.scenarios.split(",") if name.strip()]
+    if args.prefill_step_sizes:
+        prefill_step_sizes = [
+            int(value.strip())
+            for value in args.prefill_step_sizes.split(",")
+            if value.strip()
+        ]
+    else:
+        prefill_step_sizes = [int(args.prefill_step_size)]
     repeat_count = max(1, int(args.repeat))
     max_seconds = max(0.0, float(args.max_seconds))
     benchmark_start = time.perf_counter()
@@ -356,57 +450,107 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     stopped_by_budget = False
     for run_index in range(1, repeat_count + 1):
-        for name in scenario_names:
-            elapsed_seconds = time.perf_counter() - benchmark_start
-            if max_seconds > 0.0 and elapsed_seconds >= max_seconds:
-                sys.stderr.write(
-                    f"stopping profile_variants after {elapsed_seconds:.1f}s "
-                    f"(--max-seconds {max_seconds:.1f})\n"
+        for prefill_step_size in prefill_step_sizes:
+            for name in scenario_names:
+                row_name = (
+                    f"{name}_step{prefill_step_size}"
+                    if len(prefill_step_sizes) > 1
+                    else name
                 )
-                sys.stderr.flush()
-                stopped_by_budget = True
-                break
-            if name not in SCENARIOS:
-                raise ValueError(f"unknown scenario '{name}'")
-            scenario = SCENARIOS[name]
-            env = dict(scenario.get("env") or {})
-            with patched_env(env):
-                capture_path = (
-                    _capture_path_for_run(
-                        args.metal_capture,
-                        scenario_name=name,
-                        run_index=run_index,
-                        scenario_count=len(scenario_names),
-                        repeat_count=repeat_count,
+                elapsed_seconds = time.perf_counter() - benchmark_start
+                if max_seconds > 0.0 and elapsed_seconds >= max_seconds:
+                    sys.stderr.write(
+                        f"stopping profile_variants after {elapsed_seconds:.1f}s "
+                        f"(--max-seconds {max_seconds:.1f})\n"
                     )
-                    if args.metal_capture
-                    else None
-                )
-                result = _run_with_metal_capture(
-                    capture_path,
-                    lambda: generate_dflash_once(
-                        target_model=target_model,
-                        tokenizer=tokenizer,
-                        draft_model=draft_model,
-                        prompt=args.prompt,
-                        max_new_tokens=int(args.max_tokens),
-                        use_chat_template=False,
-                        block_tokens=int(scenario.get("block_tokens", 16)),
-                        prompt_tokens_override=prompt_tokens,
-                        quantize_kv_cache=bool(args.quantize_kv_cache),
-                        stop_token_ids=[],
-                        prefill_step_size=int(args.prefill_step_size),
-                    ),
-                )
-                row = _compact_result(name, run_index, result, scenario)
-                if capture_path is not None:
-                    row["metal_capture"] = str(capture_path)
-                rows.append(row)
-                _print_row(row)
-            if hasattr(mx, "clear_cache"):
-                mx.clear_cache()
-            if args.cooldown > 0:
-                time.sleep(float(args.cooldown))
+                    sys.stderr.flush()
+                    stopped_by_budget = True
+                    break
+                if name not in SCENARIOS:
+                    raise ValueError(f"unknown scenario '{name}'")
+                scenario = SCENARIOS[name]
+                env = dict(scenario.get("env") or {})
+                with patched_env(env):
+                    capture_path = (
+                        _capture_path_for_run(
+                            args.metal_capture,
+                            scenario_name=row_name,
+                            run_index=run_index,
+                            scenario_count=len(scenario_names) * len(prefill_step_sizes),
+                            repeat_count=repeat_count,
+                        )
+                        if args.metal_capture
+                        else None
+                    )
+                    run_kwargs = {
+                        "target_model": target_model,
+                        "tokenizer": tokenizer,
+                        "draft_model": draft_model,
+                        "prompt": prompt_text,
+                        "max_new_tokens": int(args.max_tokens),
+                        "use_chat_template": False,
+                        "block_tokens": int(scenario.get("block_tokens", 16)),
+                        "prompt_tokens_override": prompt_tokens,
+                        "quantize_kv_cache": bool(args.quantize_kv_cache),
+                        "kv_cache_bits": int(args.kv_cache_bits),
+                        "kv_cache_group_size": int(args.kv_cache_group_size),
+                        "stop_token_ids": [],
+                        "prefill_step_size": int(prefill_step_size),
+                    }
+                    if args.return_prompt_cache:
+                        result = _run_with_metal_capture(
+                            capture_path,
+                            lambda: _consume_stream_summary(
+                                stream_dflash_generate(
+                                    **run_kwargs,
+                                    return_prompt_cache=True,
+                                )
+                            ),
+                        )
+                    else:
+                        result = _run_with_metal_capture(
+                            capture_path,
+                            lambda: generate_dflash_once(**run_kwargs),
+                        )
+                    row = _compact_result(row_name, run_index, result, scenario)
+                    if capture_path is not None:
+                        row["metal_capture"] = str(capture_path)
+                    rows.append(row)
+                    _print_row(row)
+                    if (
+                        args.return_prompt_cache
+                        and reuse_suffix_tokens
+                        and result.get("prompt_cache") is not None
+                    ):
+                        reuse_kwargs = {
+                            **run_kwargs,
+                            "prompt_tokens_override": reuse_suffix_tokens,
+                            "prompt_cache": result["prompt_cache"],
+                            "prompt_cache_count": len(prompt_tokens),
+                        }
+                        reuse_result = _run_with_metal_capture(
+                            None,
+                            lambda: _consume_stream_summary(
+                                stream_dflash_generate(
+                                    **reuse_kwargs,
+                                    return_prompt_cache=True,
+                                )
+                            ),
+                        )
+                        reuse_row = _compact_result(
+                            f"{row_name}_reuse{len(reuse_suffix_tokens)}",
+                            run_index,
+                            reuse_result,
+                            scenario,
+                        )
+                        rows.append(reuse_row)
+                        _print_row(reuse_row)
+                if hasattr(mx, "clear_cache"):
+                    mx.clear_cache()
+                if args.cooldown > 0:
+                    time.sleep(float(args.cooldown))
+            if stopped_by_budget:
+                break
         if stopped_by_budget:
             break
 
@@ -416,7 +560,12 @@ def main() -> None:
         "prompt_tokens": len(prompt_tokens),
         "max_tokens": int(args.max_tokens),
         "prefill_step_size": int(args.prefill_step_size),
+        "prefill_step_sizes": list(prefill_step_sizes),
         "quantize_kv_cache": bool(args.quantize_kv_cache),
+        "kv_cache_bits": int(args.kv_cache_bits),
+        "kv_cache_group_size": int(args.kv_cache_group_size),
+        "return_prompt_cache": bool(args.return_prompt_cache),
+        "reuse_suffix_tokens": int(args.reuse_suffix_tokens),
         "profile": bool(args.profile),
         "metal_capture": args.metal_capture,
         "max_seconds": max_seconds,

@@ -33,6 +33,8 @@ from dflash_mlx.recurrent_rollback_cache import RecurrentRollbackCache
 
 
 _DFLASH_GENERATION_STREAM = None
+_KV_CACHE_BITS_DEFAULT = 8
+_KV_CACHE_GROUP_SIZE_DEFAULT = 64
 
 
 def _dflash_stream_context():
@@ -45,6 +47,22 @@ def _dflash_stream_context():
     if _DFLASH_GENERATION_STREAM is None:
         _DFLASH_GENERATION_STREAM = mx.new_thread_local_stream(mx.default_device())
     return mx.stream(_DFLASH_GENERATION_STREAM)
+
+
+def _resolve_kv_cache_bits(kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT) -> int:
+    bits = int(kv_cache_bits)
+    if bits not in {2, 4, 8}:
+        raise ValueError("kv_cache_bits must be one of 2, 4, or 8")
+    return bits
+
+
+def _resolve_kv_cache_group_size(
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
+) -> int:
+    group_size = int(kv_cache_group_size)
+    if group_size not in {32, 64, 128}:
+        raise ValueError("kv_cache_group_size must be one of 32, 64, or 128")
+    return group_size
 
 
 def resolve_model_ref(model_ref: str | Path | None, *, kind: str) -> str:
@@ -1132,7 +1150,11 @@ def make_target_cache(
     *,
     enable_speculative_linear_cache: bool,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
 ) -> list[Any]:
+    resolved_kv_cache_bits = _resolve_kv_cache_bits(kv_cache_bits)
+    resolved_kv_cache_group_size = _resolve_kv_cache_group_size(kv_cache_group_size)
     text_model = _target_text_model(target_model)
     caches: list[Any] = []
     for layer_index, layer in enumerate(text_model.layers):
@@ -1147,7 +1169,12 @@ def make_target_cache(
                 caches.append(cache_mod.ArraysCache(size=2))
         else:
             if quantize_kv_cache:
-                caches.append(cache_mod.QuantizedKVCache(group_size=64, bits=8))
+                caches.append(
+                    cache_mod.QuantizedKVCache(
+                        group_size=resolved_kv_cache_group_size,
+                        bits=resolved_kv_cache_bits,
+                    )
+                )
             else:
                 caches.append(cache_mod.KVCache())
     return caches
@@ -1163,7 +1190,11 @@ def load_target_bundle(
     split_full_attention_sdpa: bool = True,
     split_full_attention_chunk_size: int = 8,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
 ):
+    resolved_kv_cache_bits = _resolve_kv_cache_bits(kv_cache_bits)
+    resolved_kv_cache_group_size = _resolve_kv_cache_group_size(kv_cache_group_size)
     resolved_ref = resolve_model_ref(model_ref, kind="target")
     model, tokenizer, config = load(resolved_ref, lazy=lazy, return_config=True)
     target_family = detect_target_family(model)
@@ -1178,6 +1209,8 @@ def load_target_bundle(
         "resolved_model_ref": resolved_ref,
         "config": config,
         "quantize_kv_cache": bool(quantize_kv_cache),
+        "kv_cache_bits": resolved_kv_cache_bits,
+        "kv_cache_group_size": resolved_kv_cache_group_size,
         "target_family": target_family,
     }
     if pack_target_weights:
@@ -1481,6 +1514,8 @@ def generate_baseline_once(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
         try:
@@ -1508,6 +1543,8 @@ def generate_baseline_once(
         target_model,
         enable_speculative_linear_cache=False,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
     start_ns = time.perf_counter_ns()
 
@@ -1535,6 +1572,9 @@ def generate_baseline_once(
         "generated_token_ids": generated_tokens,
         "generation_tokens": len(generated_tokens),
         "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
+        "quantize_kv_cache": bool(quantize_kv_cache),
+        "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+        "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
     }
 
 
@@ -1549,6 +1589,8 @@ def stream_baseline_generate(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
     fallback_reason: Optional[str] = None,
 ) -> Iterator[dict[str, Any]]:
     prompt_tokens = (
@@ -1564,6 +1606,8 @@ def stream_baseline_generate(
         target_model,
         enable_speculative_linear_cache=False,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
     start_ns = time.perf_counter_ns()
     _yield_pause_ns = 0
@@ -1642,6 +1686,9 @@ def stream_baseline_generate(
         "verify_len_cap": None,
         "fallback_ar": True,
         "fallback_reason": fallback_reason,
+        "quantize_kv_cache": bool(quantize_kv_cache),
+        "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+        "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
     }
 
 
@@ -1659,6 +1706,8 @@ def generate_dflash_once(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
     prefill_step_size: int = 2048,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
@@ -1690,6 +1739,8 @@ def generate_dflash_once(
             suppress_token_ids=suppress_token_ids,
             prompt_tokens_override=prompt_tokens,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
         )
         baseline.update(
             {
@@ -1709,6 +1760,8 @@ def generate_dflash_once(
                 "verify_chunk_tokens": None,
                 "verify_len_cap": None,
                 "quantize_kv_cache": bool(quantize_kv_cache),
+                "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+                "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
                 "fallback_ar": True,
                 "fallback_reason": fallback_reason,
             }
@@ -1727,6 +1780,8 @@ def generate_dflash_once(
         target_model,
         enable_speculative_linear_cache=use_speculative_linear_cache,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
 
     draft_cache = draft_backend.make_cache(
@@ -1742,6 +1797,7 @@ def generate_dflash_once(
         start_ns = time.perf_counter_ns()
         prefill_start_ns = time.perf_counter_ns()
         prefill_step_size = max(1, int(prefill_step_size))
+        cache_only_prefill = max_new_tokens <= 0
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
         target_hidden_chunks: list[mx.array] = []
@@ -1784,9 +1840,9 @@ def generate_dflash_once(
                 and not (prefill_fastpath or prefill_defer_context)
             )
             if (
-                _prefill_middle_no_logits_enabled()
+                (cache_only_prefill or _prefill_middle_no_logits_enabled())
                 and not needs_prefill_features
-                and not is_last_chunk
+                and (cache_only_prefill or not is_last_chunk)
             ):
                 with _dflash_stream_context():
                     h = target_prefill_without_logits(
@@ -1805,9 +1861,16 @@ def generate_dflash_once(
                     capture_layer_ids=(
                         capture_layer_ids if needs_prefill_features else set()
                     ),
-                    skip_logits=not is_last_chunk,
-                    force_hidden_state=not needs_prefill_features and not is_last_chunk,
-                    last_logits_only=is_last_chunk and prefill_last_logits_only,
+                    skip_logits=cache_only_prefill or not is_last_chunk,
+                    force_hidden_state=(
+                        not needs_prefill_features
+                        and (cache_only_prefill or not is_last_chunk)
+                    ),
+                    last_logits_only=(
+                        not cache_only_prefill
+                        and is_last_chunk
+                        and prefill_last_logits_only
+                    ),
                 )
                 if not needs_prefill_features:
                     if prefill_logits is not None:
@@ -1894,13 +1957,77 @@ def generate_dflash_once(
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
 
+        draft_block_size = int(draft_model.block_size)
+        requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
+        effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
+
+        if cache_only_prefill:
+            acceptance_position_attempts = [0] * max(0, effective_block_tokens - 1)
+            acceptance_position_accepts = [0] * max(0, effective_block_tokens - 1)
+            result = {
+                "elapsed_us": (time.perf_counter_ns() - start_ns) / 1_000.0,
+                "prompt_token_count": prompt_len,
+                "generated_token_ids": [],
+                "generation_tokens": 0,
+                "accepted_from_draft": 0,
+                "acceptance_ratio": 0.0,
+                "draft_tokens_attempted": 0,
+                "draft_acceptance_ratio": 0.0,
+                "block_tokens": effective_block_tokens,
+                "cycles_completed": 0,
+                "phase_timings_us": {
+                    "prefill": prefill_ns / 1_000.0,
+                    "draft": 0.0,
+                    "draft_prefill": 0.0,
+                    "draft_incremental": 0.0,
+                    "verify": 0.0,
+                    "replay": 0.0,
+                    "commit": 0.0,
+                },
+                "speculative_linear_cache": use_speculative_linear_cache,
+                "prefill_cache_fastpath": bool(prefill_fastpath),
+                "prefill_defer_draft_context": bool(prefill_defer_context),
+                "prefill_skip_capture": bool(skip_prefill_capture),
+                "prefill_context_tokens": int(retained_context_tokens),
+                "cache_only_prefill": True,
+                "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
+                "verify_len_cap": int(_resolve_verify_len_cap(target_model, effective_block_tokens)),
+                "quantize_kv_cache": bool(quantize_kv_cache),
+                "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+                "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
+                "prefill_step_size": int(prefill_step_size),
+                "tokens_per_cycle": 0.0,
+                "acceptance_history": [],
+                "acceptance_position_attempts": acceptance_position_attempts,
+                "acceptance_position_accepts": acceptance_position_accepts,
+                "acceptance_position_rates": _acceptance_position_rates(
+                    acceptance_position_attempts,
+                    acceptance_position_accepts,
+                ),
+                "acceptance_first_20_avg": 0.0,
+                "acceptance_last_20_avg": 0.0,
+                "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
+            }
+            if _profile_dflash_cycles_enabled():
+                result["cycle_profile_us"] = []
+                result["cycle_profile_totals_us"] = {
+                    "draft": 0.0,
+                    "verify": 0.0,
+                    "acceptance": 0.0,
+                    "hidden_extraction": 0.0,
+                    "rollback": 0.0,
+                    "other": 0.0,
+                    "cycle_total": 0.0,
+                }
+            return result
+
+        if prefill_logits is None:
+            raise RuntimeError("DFlash prefill did not produce logits for decode")
+
         with _dflash_stream_context():
             suppress_token_mask = build_suppress_token_mask(int(prefill_logits.shape[-1]), suppress_token_ids)
             staged_first = greedy_tokens_with_mask(prefill_logits[:, -1, :], suppress_token_mask).reshape(-1)
 
-        draft_block_size = int(draft_model.block_size)
-        requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
-        effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
         generated_token_buffer = mx.full((max_new_tokens,), mask_token_id, dtype=mx.uint32)
         block_token_buffer = mx.full((effective_block_tokens,), mask_token_id, dtype=mx.uint32)
         mask_token_tail = mx.full(
@@ -2229,9 +2356,12 @@ def generate_dflash_once(
             "prefill_defer_draft_context": bool(prefill_defer_context),
             "prefill_skip_capture": bool(skip_prefill_capture),
             "prefill_context_tokens": int(retained_context_tokens),
+            "cache_only_prefill": False,
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "verify_len_cap": int(verify_len_cap),
             "quantize_kv_cache": bool(quantize_kv_cache),
+            "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+            "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
             "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,
             "acceptance_history": list(acceptance_history),
@@ -2271,6 +2401,8 @@ def stream_dflash_generate(
     suppress_token_ids: Optional[list[int]] = None,
     prompt_tokens_override: Optional[list[int]] = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = _KV_CACHE_BITS_DEFAULT,
+    kv_cache_group_size: int = _KV_CACHE_GROUP_SIZE_DEFAULT,
     prefill_step_size: int = 2048,
     prompt_cache: Optional[list[Any]] = None,
     prompt_cache_count: int = 0,
@@ -2307,6 +2439,8 @@ def stream_dflash_generate(
             suppress_token_ids=suppress_token_ids,
             prompt_tokens_override=prompt_tokens,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
             fallback_reason=fallback_reason,
         )
         return
@@ -2328,6 +2462,8 @@ def stream_dflash_generate(
             target_model,
             enable_speculative_linear_cache=use_speculative_linear_cache,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
         )
         draft_cache = draft_backend.make_cache(
             draft_model=draft_model,
@@ -2344,6 +2480,7 @@ def stream_dflash_generate(
         _yield_pause_ns = 0
         prefill_start_ns = time.perf_counter_ns()
         prefill_step_size = max(1, int(prefill_step_size))
+        cache_only_prefill = max_new_tokens <= 0
         prefill_logits = None
         target_hidden: Optional[mx.array] = None
         target_hidden_chunks: list[mx.array] = []
@@ -2389,9 +2526,9 @@ def stream_dflash_generate(
                 and not (prefill_fastpath or prefill_defer_context)
             )
             if (
-                _prefill_middle_no_logits_enabled()
+                (cache_only_prefill or _prefill_middle_no_logits_enabled())
                 and not needs_prefill_features
-                and not is_last_chunk
+                and (cache_only_prefill or not is_last_chunk)
             ):
                 with _dflash_stream_context():
                     h = target_prefill_without_logits(
@@ -2418,9 +2555,16 @@ def stream_dflash_generate(
                     capture_layer_ids=(
                         capture_layer_ids if needs_prefill_features else set()
                     ),
-                    skip_logits=not is_last_chunk,
-                    force_hidden_state=not needs_prefill_features and not is_last_chunk,
-                    last_logits_only=is_last_chunk and prefill_last_logits_only,
+                    skip_logits=cache_only_prefill or not is_last_chunk,
+                    force_hidden_state=(
+                        not needs_prefill_features
+                        and (cache_only_prefill or not is_last_chunk)
+                    ),
+                    last_logits_only=(
+                        not cache_only_prefill
+                        and is_last_chunk
+                        and prefill_last_logits_only
+                    ),
                 )
                 if not needs_prefill_features:
                     if prefill_logits is not None:
@@ -2525,10 +2669,6 @@ def stream_dflash_generate(
             mx.clear_cache()
         prefill_ns = time.perf_counter_ns() - prefill_start_ns
 
-        with _dflash_stream_context():
-            suppress_token_mask = build_suppress_token_mask(int(prefill_logits.shape[-1]), suppress_token_ids)
-            staged_first = greedy_tokens_with_mask(prefill_logits[:, -1, :], suppress_token_mask).reshape(-1)
-
         _pre_yield = time.perf_counter_ns()
         yield {
             "event": "prefill",
@@ -2537,6 +2677,124 @@ def stream_dflash_generate(
             "prefill_step_size": int(prefill_step_size),
         }
         _yield_pause_ns += time.perf_counter_ns() - _pre_yield
+
+        draft_block_size = int(draft_model.block_size)
+        requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
+        effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
+
+        if cache_only_prefill:
+            draft_ns_total = 0
+            draft_prefill_ns = 0
+            if prefill_defer_context and return_prompt_cache:
+                deferred_context_ns = _materialize_deferred_draft_context(
+                    draft_model=draft_model,
+                    draft_cache=draft_cache,
+                    target_hidden_segments=deferred_context_segments,
+                    total_context_len=prompt_len,
+                )
+                draft_ns_total += deferred_context_ns
+                draft_prefill_ns += deferred_context_ns
+
+            export_prompt_cache = bool(return_prompt_cache)
+            if export_prompt_cache:
+                _finalize_draft_context_cache(
+                    draft_model=draft_model,
+                    draft_cache=draft_cache,
+                    target_hidden=target_hidden,
+                    target_hidden_is_projected=target_hidden_is_projected,
+                    total_context_len=prompt_len,
+                )
+
+            elapsed_us = (time.perf_counter_ns() - start_ns - _yield_pause_ns) / 1_000.0
+            acceptance_position_attempts = [0] * max(0, effective_block_tokens - 1)
+            acceptance_position_accepts = [0] * max(0, effective_block_tokens - 1)
+            summary = {
+                "event": "summary",
+                "elapsed_us": elapsed_us,
+                "prompt_token_count": prompt_len,
+                "generated_token_ids": [],
+                "generation_tokens": 0,
+                "accepted_from_draft": 0,
+                "acceptance_ratio": 0.0,
+                "draft_tokens_attempted": 0,
+                "draft_acceptance_ratio": 0.0,
+                "block_tokens": effective_block_tokens,
+                "adaptive_current_block_tokens": int(effective_block_tokens),
+                "cycles_completed": 0,
+                "phase_timings_us": {
+                    "prefill": prefill_ns / 1_000.0,
+                    "draft": draft_ns_total / 1_000.0,
+                    "draft_prefill": draft_prefill_ns / 1_000.0,
+                    "draft_incremental": 0.0,
+                    "verify": 0.0,
+                    "replay": 0.0,
+                    "commit": 0.0,
+                    "fallback_ar": 0.0,
+                },
+                "verify_len_cap": int(_resolve_verify_len_cap(target_model, effective_block_tokens)),
+                "speculative_linear_cache": bool(use_speculative_linear_cache),
+                "prefill_cache_fastpath": bool(prefill_fastpath),
+                "prefill_defer_draft_context": bool(prefill_defer_context),
+                "prefill_skip_capture": bool(skip_prefill_capture),
+                "prefill_context_tokens": int(retained_context_tokens),
+                "cache_only_prefill": True,
+                "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
+                "quantize_kv_cache": bool(quantize_kv_cache),
+                "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+                "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
+                "prefill_step_size": int(prefill_step_size),
+                "tokens_per_cycle": 0.0,
+                "dflash_generation_tokens": 0,
+                "fallback_ar_generation_tokens": 0,
+                "adaptive_fallback_count": 0,
+                "adaptive_reprobe_count": 0,
+                "adaptive_block_tokens_history": [],
+                "acceptance_history": [],
+                "acceptance_position_attempts": acceptance_position_attempts,
+                "acceptance_position_accepts": acceptance_position_accepts,
+                "acceptance_position_rates": _acceptance_position_rates(
+                    acceptance_position_attempts,
+                    acceptance_position_accepts,
+                ),
+                "acceptance_first_20_avg": 0.0,
+                "acceptance_last_20_avg": 0.0,
+                "adaptive_fallback_ar": False,
+                "adaptive_fallback_cycle": None,
+                "adaptive_fallback_reason": None,
+                "adaptive_fallback_recent_tokens_per_cycle": None,
+                "adaptive_fallback_probe_cycles": None,
+                "adaptive_fallback_window": None,
+                "adaptive_fallback_min_tokens_per_cycle": None,
+                "adaptive_fallback_cooldown_tokens": None,
+                "adaptive_fallback_reprobe_block_tokens": None,
+                "peak_memory_gb": float(mx.get_peak_memory()) / 1e9 if hasattr(mx, "get_peak_memory") else None,
+            }
+            if profile_cycles:
+                summary["cycle_profile_us"] = []
+                summary["cycle_profile_totals_us"] = {
+                    "draft": 0.0,
+                    "verify": 0.0,
+                    "acceptance": 0.0,
+                    "hidden_extraction": 0.0,
+                    "rollback": 0.0,
+                    "other": 0.0,
+                    "cycle_total": 0.0,
+                }
+            if export_prompt_cache:
+                summary["prompt_cache"] = _combined_dflash_prompt_cache(
+                    target_cache,
+                    draft_cache,
+                )
+                exported_prompt_cache = True
+            yield summary
+            return
+
+        if prefill_logits is None:
+            raise RuntimeError("DFlash prefill did not produce logits for decode")
+
+        with _dflash_stream_context():
+            suppress_token_mask = build_suppress_token_mask(int(prefill_logits.shape[-1]), suppress_token_ids)
+            staged_first = greedy_tokens_with_mask(prefill_logits[:, -1, :], suppress_token_mask).reshape(-1)
 
         first_token_yielded = False
         if max_new_tokens > 0:
@@ -2551,9 +2809,6 @@ def stream_dflash_generate(
             }
             _yield_pause_ns += time.perf_counter_ns() - _pre_yield
 
-        draft_block_size = int(draft_model.block_size)
-        requested_block_tokens = draft_block_size if block_tokens is None else int(block_tokens)
-        effective_block_tokens = max(1, min(requested_block_tokens, draft_block_size))
         block_token_buffer = mx.full(
             (effective_block_tokens,),
             int(draft_model.mask_token_id),
@@ -2971,6 +3226,20 @@ def stream_dflash_generate(
                     start += 1
                     fallback_ar_ns_total += time.perf_counter_ns() - fallback_ar_start_ns
                 if cooldown_stop_hit or len(generated_token_ids) >= max_new_tokens:
+                    resume_hidden_parts = [target_hidden]
+                    resume_hidden_parts.extend(cooldown_hidden_chunks)
+                    with _dflash_stream_context():
+                        resume_hidden = mx.concatenate(resume_hidden_parts, axis=1)
+                        mx.eval(resume_hidden)
+                    _finalize_draft_context_cache(
+                        draft_model=draft_model,
+                        draft_cache=draft_cache,
+                        target_hidden=resume_hidden,
+                        target_hidden_is_projected=target_hidden_is_projected,
+                        total_context_len=start,
+                    )
+                    target_hidden = _empty_projected_target_hidden(draft_model)
+                    target_hidden_is_projected = True
                     break
 
                 resume_hidden_parts = [target_hidden]
@@ -3029,19 +3298,47 @@ def stream_dflash_generate(
                 profile_totals_ns["other"] += other_cycle_ns
                 profile_totals_ns["cycle_total"] += cycle_total_ns
 
-        elapsed_us = (time.perf_counter_ns() - start_ns - _yield_pause_ns) / 1_000.0
-        export_prompt_cache = return_prompt_cache and not adaptive_fallback_triggered
+        export_prompt_cache = bool(return_prompt_cache)
         if export_prompt_cache:
+            total_context_len = prompt_len + len(generated_token_ids)
+            if start < total_context_len:
+                missing_start = max(0, start - prompt_len)
+                missing_token_ids = generated_token_ids[missing_start:]
+                if missing_token_ids:
+                    cache_flush_start_ns = time.perf_counter_ns()
+                    with _dflash_stream_context():
+                        missing_ids = mx.array([missing_token_ids], dtype=mx.uint32)
+                        _, missing_hidden_states = target_forward_with_hidden_states(
+                            target_model,
+                            input_ids=missing_ids,
+                            cache=target_cache,
+                            capture_layer_ids=capture_layer_ids,
+                            skip_logits=True,
+                        )
+                        missing_hidden = extract_context_feature_from_dict(
+                            missing_hidden_states,
+                            target_layer_id_list,
+                        )
+                        if target_hidden_is_projected:
+                            missing_hidden = _project_target_feature_for_draft(
+                                draft_model,
+                                missing_hidden,
+                            )
+                        mx.eval(missing_hidden)
+                    commit_ns_total += time.perf_counter_ns() - cache_flush_start_ns
+                    target_hidden = missing_hidden
+                    start = total_context_len
             _finalize_draft_context_cache(
                 draft_model=draft_model,
                 draft_cache=draft_cache,
                 target_hidden=target_hidden,
                 target_hidden_is_projected=target_hidden_is_projected,
-                total_context_len=start,
+                total_context_len=prompt_len + len(generated_token_ids),
             )
         draft_tokens_attempted = sum(acceptance_position_attempts)
         first_20 = acceptance_history[:20]
         last_20 = acceptance_history[-20:]
+        elapsed_us = (time.perf_counter_ns() - start_ns - _yield_pause_ns) / 1_000.0
         summary = {
             "event": "summary",
             "elapsed_us": elapsed_us,
@@ -3077,8 +3374,11 @@ def stream_dflash_generate(
             "prefill_defer_draft_context": bool(prefill_defer_context),
             "prefill_skip_capture": bool(skip_prefill_capture),
             "prefill_context_tokens": int(retained_context_tokens),
+            "cache_only_prefill": False,
             "verify_chunk_tokens": int(verify_chunk_tokens) if verify_chunk_tokens else None,
             "quantize_kv_cache": bool(quantize_kv_cache),
+            "kv_cache_bits": int(_resolve_kv_cache_bits(kv_cache_bits)),
+            "kv_cache_group_size": int(_resolve_kv_cache_group_size(kv_cache_group_size)),
             "prefill_step_size": int(prefill_step_size),
             "tokens_per_cycle": (dflash_generation_tokens / cycles_completed) if cycles_completed > 0 else 0.0,
             "dflash_generation_tokens": int(dflash_generation_tokens),

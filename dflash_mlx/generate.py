@@ -93,6 +93,8 @@ def load_runtime_components(
     model_ref: str,
     draft_ref: Optional[str],
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = 8,
+    kv_cache_group_size: int = 64,
 ):
     resolved_draft_ref = resolve_optional_draft_ref(model_ref, draft_ref)
     if not resolved_draft_ref:
@@ -101,7 +103,13 @@ def load_runtime_components(
             f"Use --draft to specify one, or check https://huggingface.co/z-lab for available drafts.\n"
             f"Supported base models: {_supported_base_models()}"
         )
-    target_model, tokenizer, _ = load_target_bundle(model_ref, lazy=True, quantize_kv_cache=quantize_kv_cache)
+    target_model, tokenizer, _ = load_target_bundle(
+        model_ref,
+        lazy=True,
+        quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
+    )
     try:
         draft_model, _ = load_draft_bundle(resolved_draft_ref, lazy=True)
     except Exception as exc:
@@ -120,6 +128,8 @@ def run_generate(
     draft_ref: Optional[str],
     block_tokens: Optional[int] = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = 8,
+    kv_cache_group_size: int = 64,
     prefill_step_size: int = 2048,
 ) -> int:
     prefill_step_size = max(1, int(prefill_step_size))
@@ -127,6 +137,8 @@ def run_generate(
         model_ref=model_ref,
         draft_ref=draft_ref,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
     stop_token_ids = get_stop_token_ids(tokenizer)
     stream = stream_dflash_generate(
@@ -139,6 +151,8 @@ def run_generate(
         stop_token_ids=stop_token_ids,
         block_tokens=block_tokens,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
         prefill_step_size=prefill_step_size,
     )
 
@@ -189,7 +203,21 @@ def main() -> None:
     parser.add_argument(
         "--quantize-kv-cache",
         action="store_true",
-        help="Quantize target full-attention KV cache to 8-bit.",
+        help="Quantize target full-attention KV cache.",
+    )
+    parser.add_argument(
+        "--kv-cache-bits",
+        type=int,
+        default=8,
+        choices=(2, 4, 8),
+        help="Bits for --quantize-kv-cache. Default keeps the measured Q8 path.",
+    )
+    parser.add_argument(
+        "--kv-cache-group-size",
+        type=int,
+        default=64,
+        choices=(32, 64, 128),
+        help="Quantization group size for --quantize-kv-cache.",
     )
     args = parser.parse_args()
     raise SystemExit(
@@ -201,6 +229,8 @@ def main() -> None:
             draft_ref=args.draft,
             block_tokens=args.block_tokens,
             quantize_kv_cache=args.quantize_kv_cache,
+            kv_cache_bits=args.kv_cache_bits,
+            kv_cache_group_size=args.kv_cache_group_size,
             prefill_step_size=args.prefill_step_size,
         )
     )

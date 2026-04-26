@@ -143,6 +143,8 @@ def _build_config(
     block_tokens: int,
     prefill_step_size: int,
     quantize_kv_cache: bool,
+    kv_cache_bits: int,
+    kv_cache_group_size: int,
     repeat: int,
     cooldown: int,
     target_model: str,
@@ -155,6 +157,8 @@ def _build_config(
         "block_tokens": int(block_tokens),
         "prefill_step_size": int(prefill_step_size),
         "quantize_kv_cache": bool(quantize_kv_cache),
+        "kv_cache_bits": int(kv_cache_bits),
+        "kv_cache_group_size": int(kv_cache_group_size),
         "cooldown": int(cooldown),
         "prompt": prompt,
         "prompt_tokens": int(prompt_tokens),
@@ -175,6 +179,8 @@ def _build_single_case_report(
     draft_model: str,
     prefill_step_size: int,
     quantize_kv_cache: bool,
+    kv_cache_bits: int,
+    kv_cache_group_size: int,
 ) -> dict[str, Any]:
     run_entries = [_format_run_entry(run) for run in runs]
     baseline_tps_values = [float(run["baseline_generation_tps"]) for run in runs]
@@ -196,6 +202,8 @@ def _build_single_case_report(
             block_tokens=effective_block_tokens,
             prefill_step_size=prefill_step_size,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
             repeat=repeat,
             cooldown=cooldown,
             target_model=target_model,
@@ -367,6 +375,8 @@ def _generate_dflash_stream_once(
     suppress_token_ids: list[int] | None,
     prompt_tokens_override: list[int] | None = None,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = 8,
+    kv_cache_group_size: int = 64,
     prefill_step_size: int = 2048,
 ) -> dict[str, Any]:
     if hasattr(mx, "reset_peak_memory"):
@@ -391,6 +401,8 @@ def _generate_dflash_stream_once(
         suppress_token_ids=suppress_token_ids,
         prompt_tokens_override=prompt_tokens_override,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
         prefill_step_size=prefill_step_size,
     )
     try:
@@ -440,6 +452,8 @@ def _run_once_sequential(
     draft_model_ref: str | None,
     quantize_draft: bool,
     quantize_kv_cache: bool,
+    kv_cache_bits: int,
+    kv_cache_group_size: int,
     no_eos: bool,
     split_sdpa: bool,
     prefill_step_size: int,
@@ -479,6 +493,8 @@ def _run_once_sequential(
         lazy=True,
         split_full_attention_sdpa=split_sdpa,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
     draft_model, draft_meta = load_draft_bundle(
         draft_model_ref,
@@ -517,6 +533,8 @@ def _run_once_sequential(
             suppress_token_ids=dflash_suppress_token_ids,
             prompt_tokens_override=prompt_tokens,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
             prefill_step_size=prefill_step_size,
         )
     finally:
@@ -559,6 +577,8 @@ def benchmark_once(
     draft_model_ref: str | None,
     quantize_draft: bool = False,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = 8,
+    kv_cache_group_size: int = 64,
     no_eos: bool = False,
     split_sdpa: bool = True,
     prefill_step_size: int = 2048,
@@ -577,6 +597,8 @@ def benchmark_once(
         draft_model_ref=draft_model_ref,
         quantize_draft=quantize_draft,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
         no_eos=no_eos,
         split_sdpa=split_sdpa,
         prefill_step_size=prefill_step_size,
@@ -596,6 +618,8 @@ def benchmark_once(
         draft_model=draft_meta["resolved_model_ref"],
         prefill_step_size=prefill_step_size,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
 
 
@@ -611,6 +635,8 @@ def benchmark_matrix(
     draft_model_ref: str | None = None,
     quantize_draft: bool = False,
     quantize_kv_cache: bool = False,
+    kv_cache_bits: int = 8,
+    kv_cache_group_size: int = 64,
     no_eos: bool = False,
     split_sdpa: bool = True,
     prefill_step_size: int = 2048,
@@ -638,6 +664,8 @@ def benchmark_matrix(
             draft_model_ref=draft_model_ref,
             quantize_draft=quantize_draft,
             quantize_kv_cache=quantize_kv_cache,
+            kv_cache_bits=kv_cache_bits,
+            kv_cache_group_size=kv_cache_group_size,
             no_eos=no_eos,
             split_sdpa=split_sdpa,
             prefill_step_size=prefill_step_size,
@@ -667,6 +695,8 @@ def benchmark_matrix(
         draft_model=draft_meta["resolved_model_ref"] if draft_meta is not None else "",
         prefill_step_size=prefill_step_size,
         quantize_kv_cache=quantize_kv_cache,
+        kv_cache_bits=kv_cache_bits,
+        kv_cache_group_size=kv_cache_group_size,
     )
 
 
@@ -700,7 +730,21 @@ def main() -> None:
     parser.add_argument(
         "--quantize-kv-cache",
         action="store_true",
-        help="Quantize target full-attention KV cache to 8-bit during DFlash runs.",
+        help="Quantize target full-attention KV cache during DFlash runs.",
+    )
+    parser.add_argument(
+        "--kv-cache-bits",
+        type=int,
+        default=8,
+        choices=(2, 4, 8),
+        help="Bits for --quantize-kv-cache.",
+    )
+    parser.add_argument(
+        "--kv-cache-group-size",
+        type=int,
+        default=64,
+        choices=(32, 64, 128),
+        help="Quantization group size for --quantize-kv-cache.",
     )
     parser.add_argument(
         "--prefill-step-size",
@@ -728,6 +772,8 @@ def main() -> None:
         "draft_model_ref": args.draft,
         "quantize_draft": args.quantize_draft,
         "quantize_kv_cache": args.quantize_kv_cache,
+        "kv_cache_bits": args.kv_cache_bits,
+        "kv_cache_group_size": args.kv_cache_group_size,
         "no_eos": args.no_eos,
         "split_sdpa": args.split_sdpa,
         "prefill_step_size": args.prefill_step_size,
