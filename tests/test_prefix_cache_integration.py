@@ -185,15 +185,17 @@ class TestServeHelperShapes:
     def test_get_cache_disabled(self, monkeypatch):
         # Reset the module-level singleton first.
         import dflash_mlx.serve as serve_mod
+        import dflash_mlx.server.prefix_cache_flow as flow_mod
 
-        monkeypatch.setattr(serve_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
+        monkeypatch.setattr(flow_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
         monkeypatch.delenv("DFLASH_PREFIX_CACHE", raising=False)
         assert serve_mod._get_dflash_prefix_cache() is None
 
     def test_get_cache_enabled_returns_singleton(self, monkeypatch):
         import dflash_mlx.serve as serve_mod
+        import dflash_mlx.server.prefix_cache_flow as flow_mod
 
-        monkeypatch.setattr(serve_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
+        monkeypatch.setattr(flow_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
         monkeypatch.setenv("DFLASH_PREFIX_CACHE", "1")
         first = serve_mod._get_dflash_prefix_cache()
         second = serve_mod._get_dflash_prefix_cache()
@@ -235,8 +237,9 @@ class TestEnvExposedCorrectly:
 
     def test_enabled_flag_affects_singleton(self, monkeypatch):
         import dflash_mlx.serve as serve_mod
+        import dflash_mlx.server.prefix_cache_flow as flow_mod
 
-        monkeypatch.setattr(serve_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
+        monkeypatch.setattr(flow_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
         monkeypatch.delenv("DFLASH_PREFIX_CACHE", raising=False)
         assert prefix_cache_enabled() is False
         assert serve_mod._get_dflash_prefix_cache() is None
@@ -247,8 +250,9 @@ class TestEnvExposedCorrectly:
 
     def test_budgets_propagate_to_cache(self, monkeypatch):
         import dflash_mlx.serve as serve_mod
+        import dflash_mlx.server.prefix_cache_flow as flow_mod
 
-        monkeypatch.setattr(serve_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
+        monkeypatch.setattr(flow_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", None)
         monkeypatch.setenv("DFLASH_PREFIX_CACHE", "1")
         monkeypatch.setenv("DFLASH_PREFIX_CACHE_MAX_ENTRIES", "7")
         monkeypatch.setenv("DFLASH_PREFIX_CACHE_MAX_BYTES", "1234567")
@@ -257,3 +261,42 @@ class TestEnvExposedCorrectly:
         stats = cache.stats()
         assert stats["max_entries"] == 7
         assert stats["max_bytes"] == 1234567
+
+    def test_prefix_flow_lookup_records_hit(self, monkeypatch):
+        import dflash_mlx.server.prefix_cache_flow as flow_mod
+
+        class FakeProvider:
+            model_key = ("target/x", None, "draft/y")
+
+        class FakeDraft:
+            target_layer_ids = [3, 7]
+
+        class FakeTokenizer:
+            unk_token_id = -1
+
+            def convert_tokens_to_ids(self, tokens):
+                return [-1 for _ in tokens]
+
+        cache = DFlashPrefixCache(max_entries=4)
+        key = _make_key(
+            target_model_id="target/x",
+            draft_model_id="draft/y",
+            capture_layer_ids=(3, 7),
+        )
+        prompt = [11, 12, 13, 14]
+        snap, _ = _simulate_serve_insert(cache, key, prompt, n_cached_tokens=4)
+
+        monkeypatch.setattr(flow_mod, "_DFLASH_PREFIX_CACHE_SINGLETON", cache)
+        monkeypatch.setattr(flow_mod, "build_prefix_key", lambda *_args: key)
+        monkeypatch.setenv("DFLASH_PREFIX_CACHE", "1")
+
+        flow = flow_mod.PrefixCacheFlow.for_request(
+            model_provider=FakeProvider(),
+            draft_model=FakeDraft(),
+            tokenizer=FakeTokenizer(),
+            prompt=prompt,
+        )
+
+        assert flow.hit_tokens == len(prompt)
+        assert flow.snapshot is snap
+        assert flow.stable_prefix_len == len(prompt)

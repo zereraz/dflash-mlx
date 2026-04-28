@@ -7,11 +7,9 @@ from __future__ import annotations
 import itertools
 import logging
 import sys
-import threading
 import time
 import warnings
 from importlib.metadata import PackageNotFoundError, version as package_version
-from typing import Any, Optional
 
 warnings.filterwarnings("ignore", message="mlx_lm.server is not recommended")
 
@@ -39,12 +37,10 @@ from dflash_mlx.server.config import (
 from dflash_mlx.server.protocol import (
     STATEFUL_SERVER_API as _STATEFUL_SERVER_API,
     build_generation_context as _build_generation_context,
-    make_response as _make_response,
     match_stream_token as _match_stream_token,
 )
 from dflash_mlx.bench_logger import (
     enabled as _bench_enabled,
-    log_cycle as _bench_log_cycle,
     log_post as _bench_log_post,
 )
 from dflash_mlx.server.metrics import (
@@ -56,16 +52,18 @@ from dflash_mlx.server.model_provider import (
     DFlashModelProvider,
     wait_for_initial_model_load as _wait_for_initial_model_load,
 )
-from dflash_mlx.cache.codecs import build_snapshot, target_cache_is_serializable
-from dflash_mlx.cache.policies import compute_stable_prefix_len, prefix_cache_enabled
-from dflash_mlx.cache.prefix_l1 import DFlashPrefixCache
+from dflash_mlx.cache.policies import prefix_cache_enabled
 from dflash_mlx.runtime import stream_dflash_generate
+from dflash_mlx.server.prefix_cache_flow import (
+    PrefixCacheFlow,
+    get_dflash_prefix_cache as _get_dflash_prefix_cache,
+    log_prefix_cache_stats,
+)
 from dflash_mlx.server.prefix_cache_manager import (
     build_prefix_key as _build_prefix_key,
-    chat_template_marker_ids as _chat_template_marker_ids,
-    format_stats_line,
-    make_prefix_cache,
 )
+from dflash_mlx.server.request_loop import consume_dflash_events
+
 
 def _read_project_version() -> str:
     try:
@@ -73,27 +71,9 @@ def _read_project_version() -> str:
     except PackageNotFoundError:
         return "unknown"
 
-_DFLASH_PREFIX_CACHE_SINGLETON: Optional[DFlashPrefixCache] = None
-_DFLASH_PREFIX_CACHE_LOCK = threading.Lock()
+
 _DFLASH_REQUEST_COUNTER = itertools.count(1)
 
-def _get_dflash_prefix_cache() -> Optional[DFlashPrefixCache]:
-    global _DFLASH_PREFIX_CACHE_SINGLETON
-    if not prefix_cache_enabled():
-        return None
-    if _DFLASH_PREFIX_CACHE_SINGLETON is not None:
-        return _DFLASH_PREFIX_CACHE_SINGLETON
-    with _DFLASH_PREFIX_CACHE_LOCK:
-        if _DFLASH_PREFIX_CACHE_SINGLETON is not None:
-            return _DFLASH_PREFIX_CACHE_SINGLETON
-        _DFLASH_PREFIX_CACHE_SINGLETON = make_prefix_cache()
-    return _DFLASH_PREFIX_CACHE_SINGLETON
-
-def log_prefix_cache_stats(label: str = "") -> None:
-    cache = _DFLASH_PREFIX_CACHE_SINGLETON
-    if cache is None:
-        return
-    format_stats_line(cache, label)
 
 class DFlashResponseGenerator(mlx_server.ResponseGenerator):
     def _serve_single(self, request):
@@ -159,60 +139,15 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 mx.random.seed(args.seed)
 
             stop_token_ids = get_stop_token_ids(tokenizer)
-            detokenizer = tokenizer.detokenizer
-            if hasattr(detokenizer, "reset"):
-                detokenizer.reset()
             eos_token_ids = set(int(token_id) for token_id in tokenizer.eos_token_ids)
-            pending_token: Optional[int] = None
-            pending_text = ""
-            pending_state: Optional[str] = "normal"
-            pending_match: Optional[tuple[int, ...]] = None
-            pending_finish_reason: Optional[str] = None
-            first_token_flushed = False
-            finish_reason: Optional[str] = None
-            summary_event: Optional[dict[str, Any]] = None
             request_start_ns = time.perf_counter_ns()
-            prefill_done_ns: Optional[int] = None
-            first_token_ns: Optional[int] = None
-            prefill_elapsed_s = 0.0
-            live_tok_s = 0.0
-            live_token_count = 0
-            live_acceptance_pct = 0.0
-            live_prompt_len = len(prompt)
-            printed_prefill_progress = False
-
-            prefix_cache = _get_dflash_prefix_cache()
-            prefix_snapshot = None
-            prefix_key = None
-            stable_prefix_len: Optional[int] = None
-            cache_lookup_ms = 0.0
-            cache_hit_tokens = 0
-            cache_insert_ms = 0.0
-            if prefix_cache is not None:
-                prefix_key = _build_prefix_key(self.model_provider, draft_model)
-                im_start_id, assistant_id = _chat_template_marker_ids(tokenizer)
-                stable_prefix_len = compute_stable_prefix_len(
-                    prompt,
-                    im_start_id=im_start_id,
-                    assistant_id=assistant_id,
-                )
-                lookup_tokens = prompt[:stable_prefix_len]
-                _lookup_t0 = time.perf_counter_ns()
-                matched_len, prefix_snapshot = prefix_cache.lookup(
-                    lookup_tokens, prefix_key
-                )
-                cache_lookup_ms = (time.perf_counter_ns() - _lookup_t0) / 1e6
-                cache_hit_tokens = int(matched_len)
-                if matched_len > 0:
-                    saved = int(matched_len)
-                    total = int(len(prompt))
-                    sys.stderr.write(
-                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prefix cache hit "
-                        f"{saved}/{total} tokens (stable prefix {stable_prefix_len})\n"
-                    )
-                    sys.stderr.flush()
-                log_prefix_cache_stats(label="lookup")
-            ctx.prompt_cache_count = cache_hit_tokens
+            prefix_flow = PrefixCacheFlow.for_request(
+                model_provider=self.model_provider,
+                draft_model=draft_model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+            )
+            ctx.prompt_cache_count = prefix_flow.hit_tokens
 
             event_iter = stream_dflash_generate(
                 target_model=model,
@@ -223,212 +158,25 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 use_chat_template=False,
                 stop_token_ids=stop_token_ids,
                 prompt_tokens_override=prompt,
-                prefix_snapshot=prefix_snapshot,
-                stable_prefix_len=stable_prefix_len,
+                prefix_snapshot=prefix_flow.snapshot,
+                stable_prefix_len=prefix_flow.stable_prefix_len,
             )
-
-            client_done = False
-            try:
-                for event in event_iter:
-                    if bench_active and event.get("event") == "cycle_complete":
-                        _evt = {k: v for k, v in event.items() if k != "event"}
-                        _bench_log_cycle(request_id=request_id, **_evt)
-                        continue
-                    if event.get("event") in ("prefill", "prefill_progress"):
-                        processed = int(
-                            event.get(
-                                "tokens_processed",
-                                event.get("prompt_token_count", len(prompt)),
-                            )
-                        )
-                        total = int(
-                            event.get(
-                                "tokens_total",
-                                event.get("prompt_token_count", len(prompt)),
-                            )
-                        )
-                        elapsed_s = (time.perf_counter_ns() - request_start_ns) / 1e9
-                        if event.get("event") == "prefill_progress":
-                            sys.stderr.write(
-                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prefill: {processed}/{total} tokens | {elapsed_s:.1f}s\n"
-                            )
-                            sys.stderr.flush()
-                            rqueue.put((processed, total))
-                            printed_prefill_progress = True
-                        else:
-                            prefill_elapsed_s = elapsed_s
-                            prefill_done_ns = time.perf_counter_ns()
-                            if not printed_prefill_progress:
-                                sys.stderr.write(
-                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] prefill: {processed}/{total} tokens | {elapsed_s:.1f}s\n"
-                                )
-                                sys.stderr.flush()
-                        continue
-                    if event.get("event") == "prefill_snapshot_ready":
-                        if prefix_cache is not None and prefix_key is not None:
-                            try:
-                                evt_cache = event.get("target_cache")
-                                evt_hidden = event.get("target_hidden")
-                                evt_logits = event.get("last_logits")
-                                evt_tokens = event.get("token_ids") or []
-                                if (
-                                    evt_cache is not None
-                                    and evt_hidden is not None
-                                    and evt_logits is not None
-                                    and target_cache_is_serializable(evt_cache)
-                                ):
-                                    snap = build_snapshot(
-                                        token_ids=list(evt_tokens),
-                                        target_cache=evt_cache,
-                                        target_hidden=evt_hidden,
-                                        last_logits=evt_logits,
-                                        key=prefix_key,
-                                        kind="prefill",
-                                    )
-                                    _ins_t0 = time.perf_counter_ns()
-                                    prefix_cache.insert(snap)
-                                    cache_insert_ms += (time.perf_counter_ns() - _ins_t0) / 1e6
-                            except Exception as _cache_err:
-                                sys.stderr.write(
-                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
-                                    f"[dflash] prefix cache insert failed: {_cache_err}\n"
-                                )
-                                sys.stderr.flush()
-                        continue
-                    if event.get("event") == "generation_snapshot_ready":
-                        if prefix_cache is not None and prefix_key is not None:
-                            try:
-                                evt_cache = event.get("target_cache")
-                                evt_hidden = event.get("target_hidden")
-                                evt_tokens = event.get("token_ids") or []
-                                if (
-                                    evt_cache is not None
-                                    and evt_hidden is not None
-                                    and target_cache_is_serializable(evt_cache)
-                                ):
-                                    snap = build_snapshot(
-                                        token_ids=list(evt_tokens),
-                                        target_cache=evt_cache,
-                                        target_hidden=evt_hidden,
-                                        last_logits=event.get("last_logits"),
-                                        key=prefix_key,
-                                        kind="generation",
-                                    )
-                                    _ins_t0 = time.perf_counter_ns()
-                                    prefix_cache.insert(snap)
-                                    cache_insert_ms += (time.perf_counter_ns() - _ins_t0) / 1e6
-                                    sys.stderr.write(
-                                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
-                                        f"[dflash] end-of-request snapshot saved "
-                                        f"({len(evt_tokens)} tokens)\n"
-                                    )
-                                    sys.stderr.flush()
-                            except Exception as _cache_err:
-                                sys.stderr.write(
-                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
-                                    f"[dflash] end-of-request snapshot failed: {_cache_err}\n"
-                                )
-                                sys.stderr.flush()
-                        continue
-                    if event.get("event") != "token":
-                        if event.get("event") == "summary":
-                            summary_event = event
-                            generated_token_ids = list(event.get("generated_token_ids", []) or [])
-                            if generated_token_ids:
-                                last_token = int(generated_token_ids[-1])
-                                if last_token in eos_token_ids:
-                                    finish_reason = "stop"
-                                elif int(event.get("generation_tokens", 0)) >= int(args.max_tokens):
-                                    finish_reason = "length"
-                                else:
-                                    finish_reason = "stop"
-                            else:
-                                finish_reason = "stop"
-                        continue
-
-                    if client_done:
-                        break
-                    token = int(event["token_id"])
-                    if first_token_ns is None:
-                        first_token_ns = time.perf_counter_ns()
-                    live_token_count += 1
-                    live_acceptance_pct = float(event.get("acceptance_ratio", 0.0) or 0.0) * 100.0
-                    elapsed_s = (time.perf_counter_ns() - request_start_ns) / 1e9
-                    live_tok_s = live_token_count / max(0.001, elapsed_s - prefill_elapsed_s)
-                    if live_token_count % 2048 == 0:
-                        sys.stderr.write(
-                            f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] {live_tok_s:.1f} tok/s | {live_acceptance_pct:.1f}% accepted | "
-                            f"{live_token_count} tokens | {elapsed_s:.1f}s | "
-                            f"prompt: {live_prompt_len} tokens\n"
-                        )
-                        sys.stderr.flush()
-                    token_finish_reason: Optional[str] = None
-                    sm_state, match_sequence, current_state, terminal_match = (
-                        _match_stream_token(sm, sm_state, token)
-                    )
-                    if terminal_match or token in eos_token_ids:
-                        token_finish_reason = "stop"
-                    elif live_token_count >= int(args.max_tokens):
-                        token_finish_reason = "length"
-
-                    text = ""
-                    if token not in eos_token_ids:
-                        detokenizer.add_token(token)
-                        text = detokenizer.last_segment
-
-                    if not first_token_flushed:
-                        rqueue.put(
-                            _make_response(
-                                text=text,
-                                token=token,
-                                state=current_state or "normal",
-                                match=match_sequence,
-                                finish_reason=token_finish_reason,
-                            )
-                        )
-                        first_token_flushed = True
-                        if ctx._should_stop:
-                            break
-                        if token_finish_reason is not None:
-                            client_done = True
-                        continue
-
-                    if pending_token is not None:
-                        rqueue.put(
-                            _make_response(
-                                text=pending_text,
-                                token=pending_token,
-                                state=pending_state,
-                                match=pending_match,
-                                finish_reason=pending_finish_reason,
-                            )
-                        )
-
-                    pending_token = token
-                    pending_text = text
-                    pending_state = current_state or "normal"
-                    pending_match = match_sequence
-                    pending_finish_reason = token_finish_reason
-
-                    if ctx._should_stop:
-                        break
-                    if token_finish_reason is not None:
-                        client_done = True
-            finally:
-                event_iter.close()
-
-            detokenizer.finalize()
-            tail = detokenizer.last_segment
-            if pending_token is not None:
-                rqueue.put(
-                    _make_response(
-                        text=pending_text + tail,
-                        token=pending_token,
-                        state=pending_state,
-                        match=pending_match,
-                        finish_reason=finish_reason or pending_finish_reason,
-                    )
-                )
+            loop_result = consume_dflash_events(
+                event_iter=event_iter,
+                rqueue=rqueue,
+                ctx=ctx,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                max_tokens=int(args.max_tokens),
+                eos_token_ids=eos_token_ids,
+                request_start_ns=request_start_ns,
+                prefix_flow=prefix_flow,
+                sm=sm,
+                sm_state=sm_state,
+                bench_active=bench_active,
+                request_id=request_id,
+            )
+            summary_event = loop_result.summary_event
 
             if summary_event is not None:
                 _write_summary_line(
@@ -440,16 +188,16 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 _log_bench_post(
                     request_id=request_id,
                     summary_event=summary_event,
-                    request_start_ns=request_start_ns,
+                    request_start_ns=loop_result.request_start_ns,
                     request_done_ns=time.perf_counter_ns(),
-                    first_token_ns=first_token_ns,
-                    prefill_done_ns=prefill_done_ns,
+                    first_token_ns=loop_result.first_token_ns,
+                    prefill_done_ns=loop_result.prefill_done_ns,
                     prompt_token_count=len(prompt),
-                    live_token_count=live_token_count,
-                    cache_lookup_ms=cache_lookup_ms,
-                    cache_hit_tokens=cache_hit_tokens,
-                    cache_insert_ms=cache_insert_ms,
-                    finish_reason=finish_reason,
+                    live_token_count=loop_result.live_token_count,
+                    cache_lookup_ms=loop_result.cache_lookup_ms,
+                    cache_hit_tokens=loop_result.cache_hit_tokens,
+                    cache_insert_ms=loop_result.cache_insert_ms,
+                    finish_reason=loop_result.finish_reason,
                     max_tokens=args.max_tokens,
                 )
             if hasattr(mx, "get_peak_memory"):

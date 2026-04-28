@@ -7,6 +7,7 @@ import re
 from dflash_mlx import runtime, serve
 from dflash_mlx.engine import events
 from dflash_mlx.engine import types as engine_types
+from dflash_mlx.server import prefix_cache_flow, request_loop
 
 
 def _impl_source() -> str:
@@ -120,7 +121,11 @@ def test_prefill_progress_carries_processed_total():
 
 
 def test_serve_consumes_only_known_event_names():
-    serve_src = inspect.getsource(serve)
+    serve_src = (
+        inspect.getsource(serve)
+        + inspect.getsource(request_loop)
+        + inspect.getsource(prefix_cache_flow)
+    )
     consumed = set(re.findall(r'event\.get\("event"\)\s*[!=]=\s*"([a-z_]+)"', serve_src))
     consumed.update(
         m for m in re.findall(r'"([a-z_]+)"', serve_src)
