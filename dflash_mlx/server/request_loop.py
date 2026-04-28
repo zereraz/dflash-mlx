@@ -127,7 +127,7 @@ def consume_dflash_events(
                 continue
 
             if client_done:
-                break
+                continue
             token = int(event["token_id"])
             if first_token_ns is None:
                 first_token_ns = time.perf_counter_ns()

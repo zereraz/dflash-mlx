@@ -374,6 +374,8 @@ def stream_dflash_generate_impl(
                         suppress_token_mask=suppress_token_mask,
                         async_launch=False,
                     )
+                    mx.eval(drafted)
+                    draft_cycle_ns = time.perf_counter_ns() - draft_start_ns
                     block_token_ids[1:block_len] = drafted
                 else:
                     if (
