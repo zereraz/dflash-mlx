@@ -34,6 +34,19 @@ def _resolve_draft_window() -> tuple[int, int]:
     return max(0, sink), max(1, window)
 
 
+def _resolve_target_fa_window() -> int:
+    raw = os.environ.get("DFLASH_TARGET_FA_WINDOW", "0").strip()
+    if raw == "":
+        return 0
+    try:
+        window = int(raw)
+    except ValueError as exc:
+        raise ValueError("DFLASH_TARGET_FA_WINDOW must be an integer >= 0") from exc
+    if window < 0:
+        raise ValueError("DFLASH_TARGET_FA_WINDOW must be an integer >= 0")
+    return window
+
+
 def _draft_window_override_enabled() -> bool:
     return bool(os.environ.get("DFLASH_DRAFT_WINDOW", "").strip())
 

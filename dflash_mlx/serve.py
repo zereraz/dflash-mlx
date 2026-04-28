@@ -53,6 +53,7 @@ from dflash_mlx.server.model_provider import (
     wait_for_initial_model_load as _wait_for_initial_model_load,
 )
 from dflash_mlx.cache.policies import prefix_cache_enabled
+from dflash_mlx.engine.config import _resolve_target_fa_window
 from dflash_mlx.runtime import stream_dflash_generate
 from dflash_mlx.server.prefix_cache_flow import (
     PrefixCacheFlow,
@@ -256,14 +257,22 @@ def _print_startup_banner(
         draft_suffix = " (explicit)"
     else:
         draft_suffix = " (auto-detected)"
+    target_fa_window = _resolve_target_fa_window()
     pc_enabled = prefix_cache_enabled()
-    pc_status = "enabled" if pc_enabled else "disabled (--no-prefix-cache)"
+    if target_fa_window > 0:
+        pc_status = "disabled (--target-fa-window)"
+    else:
+        pc_status = "enabled" if pc_enabled else "disabled (--no-prefix-cache)"
+    target_fa_status = (
+        "full KV" if target_fa_window == 0 else f"rotating window {target_fa_window}"
+    )
     raw_lines = [
         f"DFlash v{dflash_version} - speculative decoding engine",
         f"Target:       {target_ref}",
         f"Draft:        {draft_ref}{draft_suffix}",
         "Mode:         DFlash (speculative decoding active)",
         f"Prefix cache: {pc_status}",
+        f"Target FA KV: {target_fa_status}",
         f"Server:       {server_name} on port {port}",
     ]
 

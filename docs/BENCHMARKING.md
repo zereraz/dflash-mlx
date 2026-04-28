@@ -47,6 +47,7 @@ dflash-benchmark --prompt "Explain speculative decoding in two paragraphs." \
 | `--quantize-draft` | off | 4-bit quantize the draft model after load. |
 | `--no-eos` | off | Disable EOS so generation always reaches `--max-tokens`. |
 | `--split-sdpa / --no-split-sdpa` | on | Toggle the split full-attention SDPA kernel on the target. |
+| `--target-fa-window` | `0` | Experimental DFlash-only target full-attention KV window. `0` keeps full KV; `N > 0` uses a rotating target FA cache of `N` tokens. Baseline generation is still run with stock MLX. |
 
 **Output layout**:
 ```
@@ -286,6 +287,7 @@ python -m benchmark.bench_agentic_trace \
 | `--thinking / --no-thinking` | on | opencode `--thinking`. |
 | `--dangerously-skip-permissions / --no-...` | on | Non-interactive perms. |
 | `--enable-prefix-cache / --no-enable-prefix-cache` | on | DFlash only: sets `DFLASH_PREFIX_CACHE=1` plus default sizing env vars on the server. |
+| `--target-fa-window` | `0` | DFlash only: passes `--target-fa-window` to the managed `dflash_mlx.serve` process. |
 | `--compare-to` | — | Path to a prior `agentic-trace-...` run directory; emits a head-to-head section in `compare.md`. |
 
 **Output layout**:

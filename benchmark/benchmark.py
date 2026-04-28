@@ -6,6 +6,7 @@
 import argparse
 import gc
 import json
+import os
 import platform
 import re
 import statistics
@@ -147,6 +148,7 @@ def _build_config(
     cooldown: int,
     target_model: str,
     draft_model: str,
+    target_fa_window: int,
 ) -> dict[str, Any]:
     return {
         "target_model": target_model,
@@ -159,6 +161,7 @@ def _build_config(
         "prompt_id": _slugify_prompt_id(prompt),
         "repeat": int(repeat),
         "git_hash": _git_hash_short(),
+        "target_fa_window": int(target_fa_window),
     }
 
 
@@ -171,6 +174,7 @@ def _build_single_case_report(
     runs: list[dict[str, Any]],
     target_model: str,
     draft_model: str,
+    target_fa_window: int,
 ) -> dict[str, Any]:
     run_entries = [_format_run_entry(run) for run in runs]
     baseline_tps_values = [float(run["baseline_generation_tps"]) for run in runs]
@@ -194,6 +198,7 @@ def _build_single_case_report(
             cooldown=cooldown,
             target_model=target_model,
             draft_model=draft_model,
+            target_fa_window=target_fa_window,
         ),
         "runs": run_entries,
         "summary": {
@@ -428,6 +433,7 @@ def _run_once_sequential(
     quantize_draft: bool,
     no_eos: bool,
     split_sdpa: bool,
+    target_fa_window: int = 0,
 ) -> dict[str, Any]:
     pristine_target_model, pristine_tokenizer, pristine_meta = _load_pristine_target_bundle(
         target_model_ref
@@ -459,35 +465,39 @@ def _run_once_sequential(
         del pristine_tokenizer
         _release_loaded_models()
 
-    target_model, tokenizer, target_meta = load_target_bundle(
-        target_model_ref,
-        lazy=True,
-        split_full_attention_sdpa=split_sdpa,
-    )
-    draft_model, draft_meta = load_draft_bundle(
-        draft_model_ref,
-        lazy=True,
-        quantize_draft=quantize_draft,
-    )
-    # Cross-check: DFlash tokenizer is a different instance; tokens must match.
-    if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
-        dflash_prompt_tokens = list(
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": prompt}],
-                tokenize=True,
-                add_generation_prompt=True,
-            )
-        )
-    else:
-        dflash_prompt_tokens = list(tokenizer.encode(prompt))
-    assert prompt_tokens == dflash_prompt_tokens, (
-        f"Tokenizer drift between pristine and DFlash bundles: "
-        f"{len(prompt_tokens)} vs {len(dflash_prompt_tokens)} tokens"
-    )
-    dflash_eos_token_ids = get_stop_token_ids(tokenizer)
-    dflash_stop_token_ids = [] if no_eos else dflash_eos_token_ids
-    dflash_suppress_token_ids = dflash_eos_token_ids if no_eos else None
+    target_model = None
+    tokenizer = None
+    draft_model = None
     try:
+        os.environ["DFLASH_TARGET_FA_WINDOW"] = str(int(target_fa_window))
+        target_model, tokenizer, target_meta = load_target_bundle(
+            target_model_ref,
+            lazy=True,
+            split_full_attention_sdpa=split_sdpa,
+        )
+        draft_model, draft_meta = load_draft_bundle(
+            draft_model_ref,
+            lazy=True,
+            quantize_draft=quantize_draft,
+        )
+        # Cross-check: DFlash tokenizer is a different instance; tokens must match.
+        if use_chat_template and hasattr(tokenizer, "apply_chat_template"):
+            dflash_prompt_tokens = list(
+                tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                )
+            )
+        else:
+            dflash_prompt_tokens = list(tokenizer.encode(prompt))
+        assert prompt_tokens == dflash_prompt_tokens, (
+            f"Tokenizer drift between pristine and DFlash bundles: "
+            f"{len(prompt_tokens)} vs {len(dflash_prompt_tokens)} tokens"
+        )
+        dflash_eos_token_ids = get_stop_token_ids(tokenizer)
+        dflash_stop_token_ids = [] if no_eos else dflash_eos_token_ids
+        dflash_suppress_token_ids = dflash_eos_token_ids if no_eos else None
         dflash = _generate_dflash_stream_once(
             target_model=target_model,
             tokenizer=tokenizer,
@@ -501,9 +511,12 @@ def _run_once_sequential(
             prompt_tokens_override=prompt_tokens,
         )
     finally:
-        del target_model
-        del tokenizer
-        del draft_model
+        if target_model is not None:
+            del target_model
+        if tokenizer is not None:
+            del tokenizer
+        if draft_model is not None:
+            del draft_model
         _release_loaded_models()
 
     baseline_elapsed = float(baseline["elapsed_us"])
@@ -540,6 +553,7 @@ def benchmark_once(
     quantize_draft: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
+    target_fa_window: int = 0,
     cooldown: int = 10,
 ) -> dict[str, Any]:
     thermal_pressure = _get_thermal_pressure()
@@ -554,6 +568,7 @@ def benchmark_once(
         quantize_draft=quantize_draft,
         no_eos=no_eos,
         split_sdpa=split_sdpa,
+        target_fa_window=target_fa_window,
     )
     target_meta = result.pop("target_meta")
     draft_meta = result.pop("draft_meta")
@@ -568,6 +583,7 @@ def benchmark_once(
         runs=[result],
         target_model=target_meta["resolved_model_ref"],
         draft_model=draft_meta["resolved_model_ref"],
+        target_fa_window=target_fa_window,
     )
 
 
@@ -583,6 +599,7 @@ def benchmark_matrix(
     quantize_draft: bool = False,
     no_eos: bool = False,
     split_sdpa: bool = True,
+    target_fa_window: int = 0,
     cooldown: int = 10,
 ) -> dict[str, Any]:
     target_meta: dict[str, Any] | None = None
@@ -606,6 +623,7 @@ def benchmark_matrix(
             quantize_draft=quantize_draft,
             no_eos=no_eos,
             split_sdpa=split_sdpa,
+            target_fa_window=target_fa_window,
         )
         if target_meta is None:
             target_meta = run.pop("target_meta")
@@ -630,6 +648,7 @@ def benchmark_matrix(
         runs=runs,
         target_model=target_meta["resolved_model_ref"] if target_meta is not None else "",
         draft_model=draft_meta["resolved_model_ref"] if draft_meta is not None else "",
+        target_fa_window=target_fa_window,
     )
 
 
@@ -665,10 +684,21 @@ def main() -> None:
         default=True,
         help="Enable split_full_attention_sdpa when loading the target model (default: enabled).",
     )
+    parser.add_argument(
+        "--target-fa-window",
+        type=int,
+        default=0,
+        help=(
+            "Experimental target verifier full-attention KV window. "
+            "0 keeps full KV cache; N>0 uses rotating KV cache for target FA layers only."
+        ),
+    )
     args = parser.parse_args()
     repeat = args.repeat if args.repeat is not None else (DEFAULT_REPEAT if args.matrix else 1)
     if repeat < 1:
         raise ValueError("--repeat must be >= 1")
+    if args.target_fa_window < 0:
+        raise ValueError("--target-fa-window must be >= 0")
 
     common_kwargs = {
         "block_tokens": args.block_tokens,
@@ -678,6 +708,7 @@ def main() -> None:
         "quantize_draft": args.quantize_draft,
         "no_eos": args.no_eos,
         "split_sdpa": args.split_sdpa,
+        "target_fa_window": args.target_fa_window,
         "cooldown": args.cooldown,
     }
     if args.matrix or repeat > 1:

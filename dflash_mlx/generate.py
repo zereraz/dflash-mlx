@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any, Optional
 
@@ -110,7 +111,9 @@ def run_generate(
     max_tokens: int,
     use_chat_template: bool,
     draft_ref: Optional[str],
+    target_fa_window: int = 0,
 ) -> int:
+    os.environ["DFLASH_TARGET_FA_WINDOW"] = str(int(target_fa_window))
     target_model, tokenizer, draft_model, _ = load_runtime_components(
         model_ref=model_ref,
         draft_ref=draft_ref,
@@ -156,7 +159,18 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--no-chat-template", action="store_true")
     parser.add_argument("--draft", default=None, help="Optional draft model override.")
+    parser.add_argument(
+        "--target-fa-window",
+        type=int,
+        default=0,
+        help=(
+            "Experimental target verifier full-attention KV window. "
+            "0 keeps full KV cache; N>0 uses rotating KV cache for target FA layers only."
+        ),
+    )
     args = parser.parse_args()
+    if args.target_fa_window < 0:
+        raise SystemExit("--target-fa-window must be >= 0")
     raise SystemExit(
         run_generate(
             model_ref=args.model,
@@ -164,6 +178,7 @@ def main() -> None:
             max_tokens=args.max_tokens,
             use_chat_template=not args.no_chat_template,
             draft_ref=args.draft,
+            target_fa_window=args.target_fa_window,
         )
     )
 

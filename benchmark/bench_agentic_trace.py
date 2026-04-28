@@ -494,6 +494,8 @@ def _build_server_cmd(args) -> tuple[list[str], int, str]:
             "--chat-template-args",
             '{"enable_thinking":true}',
         ]
+        if int(args.target_fa_window) > 0:
+            cmd.extend(["--target-fa-window", str(int(args.target_fa_window))])
         return cmd, port, f"http://127.0.0.1:{port}"
     if args.backend == "mlxlm":
         port = args.mlxlm_port
@@ -577,12 +579,20 @@ def main() -> int:
     )
     p.add_argument("--enable-prefix-cache", action=argparse.BooleanOptionalAction, default=True,
                    help="dflash only: set DFLASH_PREFIX_CACHE=1 + sane defaults")
+    p.add_argument(
+        "--target-fa-window",
+        type=int,
+        default=0,
+        help="dflash only: pass --target-fa-window to dflash_mlx.serve",
+    )
     p.add_argument("--compare-to", default=None,
                    help="path to a prior agentic-trace run dir; emits a tool_call_latency_gap verdict in compare.md")
     args = p.parse_args()
 
     if args.backend == "dflash" and not args.draft:
         raise SystemExit("--draft is required when --backend=dflash")
+    if args.target_fa_window < 0:
+        raise SystemExit("--target-fa-window must be >= 0")
 
     label = args.label or f"{args.backend}_{Path(args.target).name}"
     stamp = _now_stamp()

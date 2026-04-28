@@ -29,6 +29,7 @@ from dflash_mlx.engine.config import (
     _profile_dflash_cycles_enabled,
     _resolve_dflash_max_ctx,
     _resolve_draft_window,
+    _resolve_target_fa_window,
     _resolve_verify_len_cap,
 )
 from dflash_mlx.engine.target_verifier import (
@@ -77,6 +78,7 @@ def stream_dflash_generate_impl(
 
     prompt_len = len(prompt_tokens)
     dflash_max_ctx = _resolve_dflash_max_ctx()
+    target_fa_window = _resolve_target_fa_window()
     if prompt_len >= dflash_max_ctx:
         fallback_reason = f"prompt_len={prompt_len} >= DFLASH_MAX_CTX={dflash_max_ctx}"
         yield from stream_baseline_generate(
@@ -109,13 +111,14 @@ def stream_dflash_generate_impl(
     draft_backend = make_draft_backend()
 
     snap_prefix_len = _validate_prefix_snapshot(prefix_snapshot, prompt_tokens)
-    if snap_prefix_len > 0 and quantize_kv_cache:
+    if snap_prefix_len > 0 and (quantize_kv_cache or target_fa_window > 0):
         snap_prefix_len = 0
     if snap_prefix_len > 0:
         template_cache = make_target_cache(
             target_model,
             enable_speculative_linear_cache=True,
             quantize_kv_cache=quantize_kv_cache,
+            target_fa_window=target_fa_window,
         )
         try:
             assert prefix_snapshot is not None
@@ -126,6 +129,7 @@ def stream_dflash_generate_impl(
                 target_model,
                 enable_speculative_linear_cache=True,
                 quantize_kv_cache=quantize_kv_cache,
+                target_fa_window=target_fa_window,
             )
         finally:
             del template_cache
@@ -134,6 +138,7 @@ def stream_dflash_generate_impl(
             target_model,
             enable_speculative_linear_cache=True,
             quantize_kv_cache=quantize_kv_cache,
+            target_fa_window=target_fa_window,
         )
     draft_cache = draft_backend.make_cache(
         draft_model=draft_model,
@@ -628,6 +633,7 @@ def stream_dflash_generate_impl(
             },
             "verify_len_cap": int(verify_len_cap),
             "quantize_kv_cache": bool(quantize_kv_cache),
+            "target_fa_window": int(target_fa_window),
             "draft_sink_size": int(draft_sink_size),
             "draft_window_size": int(draft_window_size),
             "tokens_per_cycle": (len(generated_token_ids) / cycles_completed) if cycles_completed > 0 else 0.0,

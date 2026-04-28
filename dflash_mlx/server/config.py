@@ -26,6 +26,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--draft-model", "--draft", dest="draft_model", type=str, default=None)
     parser.add_argument("--dflash-max-ctx", type=int, default=None)
+    parser.add_argument(
+        "--target-fa-window",
+        type=int,
+        default=0,
+        help=(
+            "Experimental target verifier full-attention KV window. "
+            "0 keeps full KV cache; N>0 uses a rotating KV cache of N tokens "
+            "for target full-attention layers only."
+        ),
+    )
     parser.add_argument("--num-draft-tokens", type=int, default=3, help=argparse.SUPPRESS)
     parser.add_argument("--draft-quant", default=None, metavar="SPEC")
     parser.add_argument("--quantize-draft", action="store_true", help=argparse.SUPPRESS)
@@ -77,6 +87,9 @@ def normalize_cli_args(args: argparse.Namespace) -> argparse.Namespace:
         if args.dflash_max_ctx <= 0:
             raise SystemExit("--dflash-max-ctx must be > 0")
         os.environ["DFLASH_MAX_CTX"] = str(args.dflash_max_ctx)
+    if args.target_fa_window < 0:
+        raise SystemExit("--target-fa-window must be >= 0")
+    os.environ["DFLASH_TARGET_FA_WINDOW"] = str(args.target_fa_window)
     if args.prefix_cache_max_entries <= 0:
         raise SystemExit("--prefix-cache-max-entries must be > 0")
     if args.prefix_cache_max_bytes < 0:

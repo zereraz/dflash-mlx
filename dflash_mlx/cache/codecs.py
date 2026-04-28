@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import mlx.core as mx
-from mlx_lm.models.cache import KVCache
+from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 from dflash_mlx.cache.fingerprints import DFlashPrefixKey
 from dflash_mlx.cache.snapshot import DFlashPrefixSnapshot
@@ -22,6 +22,8 @@ def target_cache_is_serializable(target_cache: list[Any]) -> bool:
     for entry in target_cache:
         if isinstance(entry, RecurrentRollbackCache):
             continue
+        if isinstance(entry, RotatingKVCache):
+            return False
         if isinstance(entry, KVCache):
             continue
         return False

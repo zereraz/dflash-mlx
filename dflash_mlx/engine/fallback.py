@@ -11,6 +11,21 @@ from typing import Any, Optional
 import mlx.core as mx
 
 
+def _make_fallback_target_cache(
+    target_model: Any,
+    *,
+    quantize_kv_cache: bool,
+) -> list[Any]:
+    from dflash_mlx.runtime import make_target_cache
+
+    return make_target_cache(
+        target_model,
+        enable_speculative_linear_cache=False,
+        quantize_kv_cache=quantize_kv_cache,
+        target_fa_window=0,
+    )
+
+
 def stream_baseline_generate(
     *,
     target_model: Any,
@@ -28,7 +43,6 @@ def stream_baseline_generate(
         _prepare_prompt_tokens,
         build_suppress_token_mask,
         greedy_tokens_with_mask,
-        make_target_cache,
     )
     prompt_tokens = (
         list(prompt_tokens_override)
@@ -38,9 +52,8 @@ def stream_baseline_generate(
     prompt_len = len(prompt_tokens)
     stop_token_ids = list(stop_token_ids or [])
     prompt_array = mx.array(prompt_tokens, dtype=mx.uint32)[None]
-    cache = make_target_cache(
+    cache = _make_fallback_target_cache(
         target_model,
-        enable_speculative_linear_cache=False,
         quantize_kv_cache=quantize_kv_cache,
     )
     start_ns = time.perf_counter_ns()

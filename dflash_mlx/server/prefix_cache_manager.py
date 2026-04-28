@@ -11,7 +11,7 @@ from typing import Any, Optional
 from dflash_mlx.cache.fingerprints import DFlashPrefixKey
 from dflash_mlx.cache.policies import read_budget_env
 from dflash_mlx.cache.prefix_l1 import DFlashPrefixCache
-from dflash_mlx.engine.config import _resolve_draft_window
+from dflash_mlx.engine.config import _resolve_draft_window, _resolve_target_fa_window
 
 
 def make_prefix_cache() -> DFlashPrefixCache:
@@ -57,6 +57,7 @@ def build_prefix_key(model_provider: Any, draft_model: Any) -> DFlashPrefixKey:
         capture_layer_ids=capture_ids,
         draft_sink_size=int(sink),
         draft_window_size=int(window),
+        target_fa_window=int(_resolve_target_fa_window()),
     )
 
 

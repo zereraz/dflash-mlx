@@ -28,6 +28,7 @@ from dflash_mlx.engine.config import (
     _profile_dflash_cycles_enabled,
     _resolve_dflash_max_ctx,
     _resolve_draft_window,
+    _resolve_target_fa_window,
     _resolve_verify_len_cap,
 )
 from dflash_mlx.engine.prefill import (
@@ -584,7 +585,19 @@ def make_target_cache(
     *,
     enable_speculative_linear_cache: bool,
     quantize_kv_cache: bool = False,
+    target_fa_window: Optional[int] = None,
 ) -> list[Any]:
+    fa_window = (
+        _resolve_target_fa_window()
+        if target_fa_window is None
+        else int(target_fa_window)
+    )
+    if fa_window < 0:
+        raise ValueError("target_fa_window must be >= 0")
+    if fa_window > 0 and quantize_kv_cache:
+        raise ValueError(
+            "DFLASH_TARGET_FA_WINDOW does not support quantized target KV cache"
+        )
     text_model = _target_text_model(target_model)
     caches: list[Any] = []
     for layer_index, layer in enumerate(text_model.layers):
@@ -598,7 +611,9 @@ def make_target_cache(
             else:
                 caches.append(cache_mod.ArraysCache(size=2))
         else:
-            if quantize_kv_cache:
+            if fa_window > 0:
+                caches.append(cache_mod.RotatingKVCache(max_size=fa_window))
+            elif quantize_kv_cache:
                 caches.append(cache_mod.QuantizedKVCache(group_size=64, bits=8))
             else:
                 caches.append(cache_mod.KVCache())

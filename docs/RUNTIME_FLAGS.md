@@ -25,6 +25,7 @@ below; the default column reflects the actual values defined in
 | `--model` | str | (required) | Hugging Face repo ID or local path of the target model, e.g. `mlx-community/Qwen3.6-27B-4bit`. |
 | `--draft`, `--draft-model` | str | auto-resolved | Draft model reference. When omitted, dflash-mlx looks up a known draft for the target. Supply a HF repo ID or local path to override. |
 | `--dflash-max-ctx` | int | unlimited | Hard cap on the maximum context length the runtime is allowed to use. When unset, the runtime uses the model's own limit. Useful for memory budgeting. |
+| `--target-fa-window` | int | `0` | Experimental target-verifier full-attention KV window. `0` keeps the current full KV cache; `N > 0` uses a rotating KV cache with the last `N` tokens for target full-attention layers only. Draft, GDN, and fallback AR are not windowed. Prefix-cache is disabled in this mode. |
 
 ### Draft quantization
 
@@ -91,6 +92,7 @@ streams tokens to stdout, and prints a one-line summary to stderr.
 | `--max-tokens` | int | `2048` | Maximum number of tokens to generate. |
 | `--no-chat-template` | flag | off | When set, the prompt is fed verbatim instead of being wrapped by the tokenizer's chat template. |
 | `--draft` | str | auto-resolved | Optional draft model override. When omitted, dflash-mlx resolves a published draft for the target. |
+| `--target-fa-window` | int | `0` | Experimental target-verifier full-attention KV window. Same semantics as `dflash-serve --target-fa-window`. |
 
 ## Environment variables
 
@@ -103,6 +105,7 @@ readers see a single source of truth.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `DFLASH_MAX_CTX` | `0` (unlimited) | Hard cap on the runtime context length, mirroring `--dflash-max-ctx`. Set to a positive integer to clamp; values `<= 0` disable the cap. Example: `DFLASH_MAX_CTX=32768`. |
+| `DFLASH_TARGET_FA_WINDOW` | `0` | Experimental target-verifier full-attention KV window, mirroring `--target-fa-window` on `dflash`, `dflash-serve`, and `dflash-benchmark`. `0` preserves full KV; `N > 0` uses `RotatingKVCache(max_size=N)` for target FA layers only. Prefix-cache is disabled while this is non-zero. |
 | `DFLASH_PREFILL_STEP_SIZE` | `8192` | Number of prompt tokens processed per prefill chunk. Larger values reduce launch overhead at the cost of peak memory. Example: `DFLASH_PREFILL_STEP_SIZE=4096`. |
 
 ### Draft
@@ -146,6 +149,27 @@ layers. These knobs are advanced and are typically left at their defaults.
 | `DFLASH_PROFILE` | unset (off) | Enables per-cycle profiling instrumentation. Truthy values (anything other than empty, `0`, `false`, `no`) turn it on. Setting `DFLASH_BENCH_LOG_DIR` also implicitly enables profiling. Example: `DFLASH_PROFILE=1`. |
 | `DFLASH_BENCH_LOG_DIR` | unset | Directory where the bench logger appends `post_events.jsonl`, `cycle_events.jsonl`, and `cache_events.jsonl`. The directory is created on demand. Setting this also enables `DFLASH_PROFILE`-style per-cycle telemetry. Example: `DFLASH_BENCH_LOG_DIR=/tmp/dflash-logs`. |
 
+## Env variables without a public CLI flag
+
+These remain env-only on purpose or because the surface is still experimental.
+Do not treat them as product-facing knobs until they have a real CLI flag and a
+benchmark protocol.
+
+| Variable | Current status |
+| --- | --- |
+| `DFLASH_DRAFT_SINK` | Env-only draft cache tuning. No CLI yet. |
+| `DFLASH_DRAFT_WINDOW` | Env-only draft cache tuning. No CLI yet. |
+| `DFLASH_PREFILL_STEP_SIZE` | Env-only in the runtime path. `dflash-serve` has an old hidden parser argument, but it is not a public wired flag. |
+| `DFLASH_VERIFY_LINEAR` | Env-only verify kernel override. No CLI yet. |
+| `DFLASH_VERIFY_QMM` | Env-only verify-QMM switch, also auto-set by runtime in some load paths. No CLI yet. |
+| `DFLASH_VERIFY_VARIANT` | Env-only verify-QMM kernel variant selector. No CLI yet. |
+| `DFLASH_VERIFY_LEN` | Env-only per-cycle verify length cap. No CLI yet. |
+| `DFLASH_VERIFY_MAX_N` | Env-only verify layer exclusion threshold. No CLI yet. |
+| `DFLASH_VERIFY_QMM_KPARTS` | Env-only verify-QMM K partition override. No CLI yet. |
+| `DFLASH_VERIFY_INCLUDE` | Env-only projection allow-list for verify kernels. No CLI yet. |
+| `DFLASH_PROFILE` | Env-only profiling switch. Agentic trace enables profiling indirectly through `DFLASH_BENCH_LOG_DIR`, but there is no general public CLI flag. |
+| `DFLASH_BENCH_LOG_DIR` | Env-only structured logging destination. `bench_agentic_trace` sets it internally for managed server runs, but `dflash-serve` has no public `--bench-log-dir` flag. |
+
 ## Precedence rules
 
 When both a CLI flag and the corresponding environment variable are set, the
@@ -171,6 +195,14 @@ dflash-serve --model mlx-community/Qwen3.6-35B-A3B-4bit --no-prefix-cache --max-
 
 Runs the 35B-A3B target with the prefix cache disabled (single-turn or
 benchmark scenarios) and lifts the per-request token ceiling to 8192.
+
+```
+dflash-serve --model mlx-community/Qwen3.6-27B-4bit --target-fa-window 4096
+```
+
+Runs the experimental target full-attention rotating KV probe. This is not a
+product default; it disables prefix-cache and only affects target verifier
+full-attention layers.
 
 ```
 DFLASH_BENCH_LOG_DIR=/tmp/dflash-logs dflash-serve --model mlx-community/Qwen3.6-27B-4bit --log-level DEBUG

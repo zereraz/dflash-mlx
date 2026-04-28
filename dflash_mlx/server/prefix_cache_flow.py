@@ -15,6 +15,7 @@ from dflash_mlx.cache.fingerprints import DFlashPrefixKey
 from dflash_mlx.cache.policies import compute_stable_prefix_len, prefix_cache_enabled
 from dflash_mlx.cache.prefix_l1 import DFlashPrefixCache
 from dflash_mlx.cache.snapshot import DFlashPrefixSnapshot
+from dflash_mlx.engine.config import _resolve_target_fa_window
 from dflash_mlx.server.prefix_cache_manager import (
     build_prefix_key,
     chat_template_marker_ids,
@@ -29,6 +30,8 @@ _DFLASH_PREFIX_CACHE_LOCK = threading.Lock()
 
 def get_dflash_prefix_cache() -> Optional[DFlashPrefixCache]:
     global _DFLASH_PREFIX_CACHE_SINGLETON
+    if _resolve_target_fa_window() > 0:
+        return None
     if not prefix_cache_enabled():
         return None
     if _DFLASH_PREFIX_CACHE_SINGLETON is not None:
