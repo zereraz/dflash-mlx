@@ -1,0 +1,51 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_file": "benchmark/results/pi-session-20260423-prompt.txt",
+  "prompt_tokens": 10000,
+  "max_tokens": 0,
+  "prefill_step_size": 2048,
+  "prompt_cache_checkpoint_tokens": 2048,
+  "target_only_checkpoints": true,
+  "scenarios": "fastpath_b16",
+  "threshold": null,
+  "mlp_threshold": 256,
+  "gdn_threshold": 256,
+  "pairs": 1,
+  "order": [
+    "q4",
+    "hybrid_gdn_qkv_z_out"
+  ],
+  "trials": [
+    {
+      "variant": "q4",
+      "pair": 1,
+      "prefill_ms": 55366.997291,
+      "wall_s": 57.535946207586676,
+      "output": "benchmark/results/prefill-ab-10000-realpi-target-only-checkpoint-20260427/q4-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_gdn_qkv_z_out",
+      "pair": 1,
+      "prefill_ms": 48335.480542000005,
+      "wall_s": 51.99571391567588,
+      "output": "benchmark/results/prefill-ab-10000-realpi-target-only-checkpoint-20260427/hybrid_gdn_qkv_z_out-p10000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "q4": {
+      "count": 1.0,
+      "best_ms": 55366.997291,
+      "median_ms": 55366.997291,
+      "mean_ms": 55366.997291
+    },
+    "hybrid_gdn_qkv_z_out": {
+      "count": 1.0,
+      "best_ms": 48335.480542000005,
+      "median_ms": 48335.480542000005,
+      "mean_ms": 48335.480542000005
+    }
+  },
+  "hybrid_gdn_qkv_z_out_vs_q4_median_speedup": 1.145473194228205,
+  "hybrid_gdn_qkv_z_out_vs_q4_median_delta_ms": 7031.516748999995
+}

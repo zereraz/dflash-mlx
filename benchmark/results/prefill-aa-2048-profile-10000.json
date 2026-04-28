@@ -1,0 +1,674 @@
+{
+  "metadata": {
+    "created_at_s": 1777208037.55733,
+    "device": {
+      "metal": true,
+      "device_name": "Apple M3 Max",
+      "max_recommended_working_set_size": 115448725504,
+      "memory_size": 137438953472,
+      "architecture": "applegpu_g15s",
+      "max_buffer_length": 86586540032,
+      "resource_limit": 499000
+    },
+    "mlx_memory_config": {
+      "metal": true,
+      "wired_limit": 115448725504,
+      "cache_fraction": 0.25,
+      "device_name": "Apple M3 Max",
+      "architecture": "applegpu_g15s"
+    },
+    "env": {
+      "DFLASH_PACK_ATTENTION_KV": "0",
+      "DFLASH_PACK_MLP_GATE_UP": "1",
+      "DFLASH_PROFILE_PREFILL": "1",
+      "DFLASH_VERIFY_QMM": "1"
+    }
+  },
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "max_tokens": 0,
+  "prefill_step_size": 2048,
+  "prefill_step_sizes": [
+    2048
+  ],
+  "quantize_kv_cache": false,
+  "kv_cache_bits": 8,
+  "kv_cache_group_size": 64,
+  "return_prompt_cache": true,
+  "reuse_suffix_tokens": 0,
+  "profile": false,
+  "metal_capture": null,
+  "max_seconds": 420.0,
+  "stopped_by_budget": false,
+  "rows": [
+    {
+      "name": "auto_b16",
+      "run": 1,
+      "block_tokens": 16,
+      "prefill_step_size": 2048,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 10000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 52532.24546,
+      "prefill_ms": 52470.709209,
+      "draft_ms": 61.523917000000004,
+      "draft_prefill_ms": 61.523917000000004,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [
+        {
+          "chunk_start": 0,
+          "chunk_end": 2048,
+          "tokens": 2048,
+          "elapsed_us": 9326768.667,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 4.916e-05,
+            "cache_gb": 1.0564e-05,
+            "peak_gb": 4.916e-05
+          },
+          "memory_after": {
+            "active_gb": 16.980062816,
+            "cache_gb": 1.518873422,
+            "peak_gb": 17.96447909
+          }
+        },
+        {
+          "chunk_start": 2048,
+          "chunk_end": 4096,
+          "tokens": 2048,
+          "elapsed_us": 9926338.875,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 16.980062816,
+            "cache_gb": 1.518873422,
+            "peak_gb": 17.96447909
+          },
+          "memory_after": {
+            "active_gb": 17.577191946,
+            "cache_gb": 2.150599524,
+            "peak_gb": 18.633787928
+          }
+        },
+        {
+          "chunk_start": 4096,
+          "chunk_end": 6144,
+          "tokens": 2048,
+          "elapsed_us": 11087700.667,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 17.577191946,
+            "cache_gb": 2.150599524,
+            "peak_gb": 18.633787928
+          },
+          "memory_after": {
+            "active_gb": 17.711409674,
+            "cache_gb": 3.06079626,
+            "peak_gb": 19.231189566
+          }
+        },
+        {
+          "chunk_start": 6144,
+          "chunk_end": 8192,
+          "tokens": 2048,
+          "elapsed_us": 11824955.458,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 17.711409674,
+            "cache_gb": 3.06079626,
+            "peak_gb": 19.231189566
+          },
+          "memory_after": {
+            "active_gb": 17.845627402,
+            "cache_gb": 4.285533028,
+            "peak_gb": 19.566733886
+          }
+        },
+        {
+          "chunk_start": 8192,
+          "chunk_end": 10000,
+          "tokens": 1808,
+          "elapsed_us": 10304810.833,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": true,
+          "memory_before": {
+            "active_gb": 17.845627402,
+            "cache_gb": 4.285533028,
+            "peak_gb": 19.566733886
+          },
+          "memory_after": {
+            "active_gb": 17.811384862,
+            "cache_gb": 8.399555408,
+            "peak_gb": 19.566733886
+          }
+        }
+      ],
+      "run_wall_ms": 52544.51666679233,
+      "mlx_memory_before": {
+        "active_gb": 8e-09,
+        "cache_gb": 1.0564e-05,
+        "peak_gb": 1.0572e-05
+      },
+      "mlx_memory_after": {
+        "active_gb": 18.144931614,
+        "cache_gb": 0.06466765,
+        "peak_gb": 19.566733886
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    },
+    {
+      "name": "auto_b16",
+      "run": 2,
+      "block_tokens": 16,
+      "prefill_step_size": 2048,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 10000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 54824.295916,
+      "prefill_ms": 54776.781417000006,
+      "draft_ms": 47.51075,
+      "draft_prefill_ms": 47.51075,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [
+        {
+          "chunk_start": 0,
+          "chunk_end": 2048,
+          "tokens": 2048,
+          "elapsed_us": 10771712.291,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 18.144980766,
+            "cache_gb": 0.0,
+            "peak_gb": 19.566733886
+          },
+          "memory_after": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 21.515300696
+          }
+        },
+        {
+          "chunk_start": 2048,
+          "chunk_end": 4096,
+          "tokens": 2048,
+          "elapsed_us": 11343820.042,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 21.515300696
+          },
+          "memory_after": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 21.869981544
+          }
+        },
+        {
+          "chunk_start": 4096,
+          "chunk_end": 6144,
+          "tokens": 2048,
+          "elapsed_us": 11342234.792,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 21.869981544
+          },
+          "memory_after": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.238097234
+          }
+        },
+        {
+          "chunk_start": 6144,
+          "chunk_end": 8192,
+          "tokens": 2048,
+          "elapsed_us": 11415165.208,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.238097234
+          },
+          "memory_after": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 8192,
+          "chunk_end": 10000,
+          "tokens": 1808,
+          "elapsed_us": 9903731.542,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": true,
+          "memory_before": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.81829253,
+            "cache_gb": 8.327988236,
+            "peak_gb": 22.573641554
+          }
+        }
+      ],
+      "run_wall_ms": 54839.482583105564,
+      "mlx_memory_before": {
+        "active_gb": 18.144931614,
+        "cache_gb": 0.0,
+        "peak_gb": 19.566733886
+      },
+      "mlx_memory_after": {
+        "active_gb": 18.144931614,
+        "cache_gb": 2.695643158,
+        "peak_gb": 22.573641554
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    },
+    {
+      "name": "auto_b16",
+      "run": 3,
+      "block_tokens": 16,
+      "prefill_step_size": 2048,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 10000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 52419.435666,
+      "prefill_ms": 52376.781667,
+      "draft_ms": 42.643708,
+      "draft_prefill_ms": 42.643708,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [
+        {
+          "chunk_start": 0,
+          "chunk_end": 2048,
+          "tokens": 2048,
+          "elapsed_us": 10331907.542,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 18.144980766,
+            "cache_gb": 0.0,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 2048,
+          "chunk_end": 4096,
+          "tokens": 2048,
+          "elapsed_us": 10876188.166,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 4096,
+          "chunk_end": 6144,
+          "tokens": 2048,
+          "elapsed_us": 10889044.333,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 6144,
+          "chunk_end": 8192,
+          "tokens": 2048,
+          "elapsed_us": 10847534.0,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 8192,
+          "chunk_end": 10000,
+          "tokens": 1808,
+          "elapsed_us": 9431996.834,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": true,
+          "memory_before": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.81829253,
+            "cache_gb": 8.327988236,
+            "peak_gb": 22.573641554
+          }
+        }
+      ],
+      "run_wall_ms": 52435.89766602963,
+      "mlx_memory_before": {
+        "active_gb": 18.144931614,
+        "cache_gb": 0.0,
+        "peak_gb": 22.573641554
+      },
+      "mlx_memory_after": {
+        "active_gb": 18.144931614,
+        "cache_gb": 2.695643158,
+        "peak_gb": 22.573641554
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    },
+    {
+      "name": "auto_b16",
+      "run": 4,
+      "block_tokens": 16,
+      "prefill_step_size": 2048,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 10000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 158049.688541,
+      "prefill_ms": 157294.39891699998,
+      "draft_ms": 755.257791,
+      "draft_prefill_ms": 755.257791,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [
+        {
+          "chunk_start": 0,
+          "chunk_end": 2048,
+          "tokens": 2048,
+          "elapsed_us": 9881252.0,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 18.144980766,
+            "cache_gb": 0.0,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 2048,
+          "chunk_end": 4096,
+          "tokens": 2048,
+          "elapsed_us": 53943500.625,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.417310516,
+            "cache_gb": 1.339311114,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 4096,
+          "chunk_end": 6144,
+          "tokens": 2048,
+          "elapsed_us": 11064329.125,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.584099614,
+            "cache_gb": 2.125169696,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 6144,
+          "chunk_end": 8192,
+          "tokens": 2048,
+          "elapsed_us": 11203994.083,
+          "path": "target_prefill_without_logits",
+          "needs_features": false,
+          "is_last_chunk": false,
+          "memory_before": {
+            "active_gb": 20.718317342,
+            "cache_gb": 3.010200608,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          }
+        },
+        {
+          "chunk_start": 8192,
+          "chunk_end": 10000,
+          "tokens": 1808,
+          "elapsed_us": 71201014.625,
+          "path": "target_forward_with_hidden_states",
+          "needs_features": true,
+          "is_last_chunk": true,
+          "memory_before": {
+            "active_gb": 20.85253507,
+            "cache_gb": 4.234937376,
+            "peak_gb": 22.573641554
+          },
+          "memory_after": {
+            "active_gb": 20.81829253,
+            "cache_gb": 8.327988236,
+            "peak_gb": 22.573641554
+          }
+        }
+      ],
+      "run_wall_ms": 158527.05450030044,
+      "mlx_memory_before": {
+        "active_gb": 18.144931614,
+        "cache_gb": 0.0,
+        "peak_gb": 22.573641554
+      },
+      "mlx_memory_after": {
+        "active_gb": 18.180190006,
+        "cache_gb": 2.695643158,
+        "peak_gb": 22.573641554
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    }
+  ]
+}

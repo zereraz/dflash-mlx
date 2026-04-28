@@ -1,0 +1,59 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "scenarios": "auto_b16",
+  "threshold": 256,
+  "pairs": 2,
+  "order": [
+    "hybrid",
+    "hybrid_gdn_qkv_out"
+  ],
+  "trials": [
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 44459.966041,
+      "wall_s": 49.464578999672085,
+      "output": "benchmark/results/prefill-ab-10000-selective-gdn-qkv-out-20260427/hybrid-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_gdn_qkv_out",
+      "pair": 1,
+      "prefill_ms": 43783.635375,
+      "wall_s": 49.126737042330205,
+      "output": "benchmark/results/prefill-ab-10000-selective-gdn-qkv-out-20260427/hybrid_gdn_qkv_out-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 2,
+      "prefill_ms": 43362.357082999995,
+      "wall_s": 48.574066624976695,
+      "output": "benchmark/results/prefill-ab-10000-selective-gdn-qkv-out-20260427/hybrid-p10000-s2048-pair2.json"
+    },
+    {
+      "variant": "hybrid_gdn_qkv_out",
+      "pair": 2,
+      "prefill_ms": 42969.48425,
+      "wall_s": 48.16160366591066,
+      "output": "benchmark/results/prefill-ab-10000-selective-gdn-qkv-out-20260427/hybrid_gdn_qkv_out-p10000-s2048-pair2.json"
+    }
+  ],
+  "summary": {
+    "hybrid": {
+      "count": 2.0,
+      "best_ms": 43362.357082999995,
+      "median_ms": 43911.161561999994,
+      "mean_ms": 43911.161561999994
+    },
+    "hybrid_gdn_qkv_out": {
+      "count": 2.0,
+      "best_ms": 42969.48425,
+      "median_ms": 43376.559812499996,
+      "mean_ms": 43376.559812499996
+    }
+  },
+  "hybrid_gdn_qkv_out_vs_hybrid_median_speedup": 1.0123246691718033,
+  "hybrid_gdn_qkv_out_vs_hybrid_median_delta_ms": 534.6017494999978
+}

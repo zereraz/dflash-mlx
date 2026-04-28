@@ -1,0 +1,58 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "threshold": 256,
+  "pairs": 2,
+  "order": [
+    "hybrid",
+    "hybrid_middle"
+  ],
+  "trials": [
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 44876.569666,
+      "wall_s": 49.778584165964276,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-middle/hybrid-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_middle",
+      "pair": 1,
+      "prefill_ms": 44355.639125,
+      "wall_s": 49.198429042007774,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-middle/hybrid_middle-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 2,
+      "prefill_ms": 44217.755957999994,
+      "wall_s": 49.07509912503883,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-middle/hybrid-p10000-s2048-pair2.json"
+    },
+    {
+      "variant": "hybrid_middle",
+      "pair": 2,
+      "prefill_ms": 43580.812792000004,
+      "wall_s": 48.3659481247887,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-middle/hybrid_middle-p10000-s2048-pair2.json"
+    }
+  ],
+  "summary": {
+    "hybrid": {
+      "count": 2.0,
+      "best_ms": 44217.755957999994,
+      "median_ms": 44547.162811999995,
+      "mean_ms": 44547.162811999995
+    },
+    "hybrid_middle": {
+      "count": 2.0,
+      "best_ms": 43580.812792000004,
+      "median_ms": 43968.2259585,
+      "mean_ms": 43968.2259585
+    }
+  },
+  "hybrid_middle_vs_hybrid_median_speedup": 1.013167164261902,
+  "hybrid_middle_vs_hybrid_median_delta_ms": 578.9368534999958
+}

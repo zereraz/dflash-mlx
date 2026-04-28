@@ -1,0 +1,94 @@
+{
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "shape": {
+    "batch": 1,
+    "tokens": 2048,
+    "key_heads": 16,
+    "value_heads": 48,
+    "key_dim": 128,
+    "value_dim": 128
+  },
+  "variants": {
+    "1": {
+      "best_ms": 5.127416,
+      "mean_ms": 5.319720142857143,
+      "samples_ms": [
+        5.664875,
+        5.260917,
+        5.127416,
+        5.173709,
+        5.269916,
+        5.146208,
+        5.595
+      ],
+      "max_y_diff_vs_first": 0.0,
+      "max_state_diff_vs_first": 0.0
+    },
+    "2": {
+      "best_ms": 5.101583,
+      "mean_ms": 5.181553571428572,
+      "samples_ms": [
+        5.1555,
+        5.152208,
+        5.101583,
+        5.335792,
+        5.131209,
+        5.136917,
+        5.257666
+      ],
+      "max_y_diff_vs_first": 0.0,
+      "max_state_diff_vs_first": 0.0
+    },
+    "4": {
+      "best_ms": 5.06475,
+      "mean_ms": 5.203137142857143,
+      "samples_ms": [
+        5.06475,
+        5.316167,
+        5.251542,
+        5.181833,
+        5.176584,
+        5.1585,
+        5.272584
+      ],
+      "max_y_diff_vs_first": 0.0,
+      "max_state_diff_vs_first": 0.0
+    },
+    "8": {
+      "best_ms": 5.159625,
+      "mean_ms": 5.310452142857143,
+      "samples_ms": [
+        5.297166,
+        5.700709,
+        5.263583,
+        5.250125,
+        5.251166,
+        5.159625,
+        5.250791
+      ],
+      "max_y_diff_vs_first": 0.0,
+      "max_state_diff_vs_first": 0.0
+    },
+    "16": {
+      "best_ms": 5.08775,
+      "mean_ms": 5.254535857142857,
+      "samples_ms": [
+        5.08775,
+        5.230291,
+        5.242417,
+        5.218417,
+        5.214709,
+        5.601792,
+        5.186375
+      ],
+      "max_y_diff_vs_first": 0.0,
+      "max_state_diff_vs_first": 0.0
+    }
+  }
+}

@@ -198,6 +198,49 @@ def _profile_totals_ms(result: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def _mlx_memory_snapshot() -> dict[str, float]:
+    snapshot: dict[str, float] = {}
+    for key, attr in (
+        ("active_gb", "get_active_memory"),
+        ("cache_gb", "get_cache_memory"),
+        ("peak_gb", "get_peak_memory"),
+    ):
+        fn = getattr(mx, attr, None)
+        if not callable(fn):
+            continue
+        try:
+            snapshot[key] = float(fn()) / 1e9
+        except Exception:
+            pass
+    return snapshot
+
+
+def _filtered_env() -> dict[str, str]:
+    prefixes = ("DFLASH_", "MLX_", "MTL_")
+    return {
+        key: value
+        for key, value in sorted(os.environ.items())
+        if key.startswith(prefixes)
+    }
+
+
+def _device_metadata() -> dict[str, Any]:
+    if not mx.metal.is_available():
+        return {"metal": False}
+    try:
+        info = dict(mx.device_info())
+    except Exception as exc:
+        return {"metal": True, "device_info_error": str(exc)}
+    return {
+        "metal": True,
+        **{
+            str(key): value
+            for key, value in info.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        },
+    }
+
+
 def _compact_result(
     name: str,
     run_index: int,
@@ -221,6 +264,8 @@ def _compact_result(
         "draft_ms": _phase_ms(result, "draft"),
         "draft_prefill_ms": _phase_ms(result, "draft_prefill"),
         "verify_ms": _phase_ms(result, "verify"),
+        "verify_linear_install_ms": _phase_ms(result, "verify_linear_install"),
+        "verify_linear_swapped": int(result.get("verify_linear_swapped", 0) or 0),
         "replay_ms": _phase_ms(result, "replay"),
         "commit_ms": _phase_ms(result, "commit"),
         "decode_tps": _decode_tps(result),
@@ -234,7 +279,21 @@ def _compact_result(
         "cycles": int(result.get("cycles_completed", 0) or 0),
         "adaptive_fallback_ar": bool(result.get("adaptive_fallback_ar", False)),
         "adaptive_fallback_count": int(result.get("adaptive_fallback_count", 0) or 0),
+        "prompt_cache_checkpoint_tokens": int(
+            result.get("prompt_cache_checkpoint_tokens", 0) or 0
+        ),
+        "prompt_cache_checkpoints": int(
+            result.get("prompt_cache_checkpoints", 0) or 0
+        ),
+        "prompt_cache_checkpoint_ms": float(
+            result.get("prompt_cache_checkpoint_us", 0.0) or 0.0
+        )
+        / 1_000.0,
+        "prompt_cache_target_only_checkpoints": bool(
+            result.get("prompt_cache_target_only_checkpoints", False)
+        ),
         "profile_totals_ms": _profile_totals_ms(result),
+        "prefill_chunk_profile_us": list(result.get("prefill_chunk_profile_us", [])),
     }
 
 
@@ -246,6 +305,7 @@ def _print_row(row: dict[str, Any]) -> None:
         f"accept={row['acceptance_ratio'] * 100:.1f}% "
         f"draft_accept={row['draft_acceptance_ratio'] * 100:.1f}% "
         f"cache={'yes' if row['returned_prompt_cache'] else 'no'} "
+        f"ckpt={row['prompt_cache_checkpoints']} "
         f"fallback={row['adaptive_fallback_count']} "
         f"draft={row['draft_ms']:.1f}ms verify={row['verify_ms']:.1f}ms "
         f"cycles={row['cycles']}",
@@ -346,15 +406,98 @@ def main() -> None:
     )
     parser.add_argument("--profile", action="store_true", help="Collect DFLASH_PROFILE cycle timings.")
     parser.add_argument(
+        "--profile-prefill",
+        action="store_true",
+        help=(
+            "Collect per-prefill-chunk path timings and MLX memory snapshots "
+            "via DFLASH_PROFILE_PREFILL."
+        ),
+    )
+    parser.add_argument(
         "--split-sdpa",
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Enable split full-attention SDPA hooks when loading the target model.",
     )
     parser.add_argument(
+        "--prefill-split-sdpa-threshold",
+        type=int,
+        default=0,
+        help=(
+            "When >0, split full-attention SDPA for prefill chunks whose "
+            "query length is at least this many tokens. This is an Apple "
+            "unified-memory scheduling experiment for large prefill chunks."
+        ),
+    )
+    parser.add_argument(
+        "--prefill-split-sdpa-chunk",
+        type=int,
+        default=2048,
+        help="Query tile size for --prefill-split-sdpa-threshold.",
+    )
+    parser.add_argument(
         "--quantize-kv-cache",
         action="store_true",
         help="Use quantized target full-attention KV cache during DFlash runs.",
+    )
+    parser.add_argument(
+        "--mlx-cache-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Set DFLASH_MLX_CACHE_FRACTION before configuring MLX memory. "
+            "Useful for Apple unified-memory/cache-pressure sweeps."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-mlp",
+        action="store_true",
+        help=(
+            "Set DFLASH_HYBRID_MLP=1 before loading the target. This keeps q4 "
+            "for decode/small verify and uses bf16 MLP weights for large prefill chunks."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-mlp-threshold",
+        type=int,
+        default=256,
+        help="Effective linear row count where --hybrid-mlp switches from q4 to bf16.",
+    )
+    parser.add_argument(
+        "--hybrid-gdn-proj",
+        action="store_true",
+        help=(
+            "Set DFLASH_HYBRID_GDN_PROJ=1 before loading the target. This "
+            "uses packed GDN qkv+z and b+a projections for large prefill chunks."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-proj-threshold",
+        type=int,
+        default=256,
+        help="Effective linear row count where --hybrid-gdn-proj switches to packed GDN inputs.",
+    )
+    parser.add_argument(
+        "--hybrid-gdn-linear",
+        action="store_true",
+        help=(
+            "Set DFLASH_HYBRID_GDN_LINEAR=1 before loading the target. This "
+            "uses bf16 GDN projection linears for large prefill chunks."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-linear-threshold",
+        type=int,
+        default=256,
+        help="Effective linear row count where --hybrid-gdn-linear switches to bf16 GDN linears.",
+    )
+    parser.add_argument(
+        "--hybrid-gdn-linear-attrs",
+        default=None,
+        help=(
+            "Comma-separated GDN projections for --hybrid-gdn-linear. "
+            "Known: in_proj_qkv,in_proj_z,out_proj."
+        ),
     )
     parser.add_argument(
         "--kv-cache-bits",
@@ -376,6 +519,63 @@ def main() -> None:
         help=(
             "Use the streaming path and export the DFlash prompt cache. "
             "This matches the server's --dflash-prompt-cache cache-build cost."
+        ),
+    )
+    parser.add_argument(
+        "--middle-no-logits",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Control DFLASH_PREFILL_MIDDLE_NO_LOGITS. When enabled, chunks "
+            "that do not need draft context features use target_prefill_without_logits."
+        ),
+    )
+    parser.add_argument(
+        "--slice-capture",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Control DFLASH_PREFILL_SLICE_CAPTURE. When enabled, retained "
+            "draft-context hidden states are captured as the smallest token slice."
+        ),
+    )
+    parser.add_argument(
+        "--skip-final-mlp",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Control DFLASH_PREFILL_SKIP_FINAL_MLP. When enabled, cache-only "
+            "prefill chunks skip the final layer MLP because no later cache "
+            "or logits consume that hidden output."
+        ),
+    )
+    parser.add_argument(
+        "--skip-final-attention",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Control DFLASH_PREFILL_SKIP_FINAL_ATTENTION. Cache-only prefill "
+            "chunks update the final full-attention layer K/V cache without "
+            "computing final-layer Q/SDPA/O/MLP."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-cache-checkpoint-tokens",
+        type=int,
+        default=0,
+        help=(
+            "When used with --return-prompt-cache, emit reusable DFlash prompt "
+            "cache checkpoints about every N tokens."
+        ),
+    )
+    parser.add_argument(
+        "--target-only-checkpoints",
+        action="store_true",
+        help=(
+            "With --return-prompt-cache checkpoints, save exact target-cache "
+            "checkpoints but omit persisted draft-context K/V. This keeps dense "
+            "prefix reuse cheap; decode after a mid-checkpoint may draft worse "
+            "until fresh suffix context is added."
         ),
     )
     parser.add_argument(
@@ -405,16 +605,63 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    configure_mlx_memory_limits()
+    if args.mlx_cache_fraction is not None:
+        os.environ["DFLASH_MLX_CACHE_FRACTION"] = str(float(args.mlx_cache_fraction))
+    mlx_memory_config = configure_mlx_memory_limits()
 
     if args.profile:
         os.environ["DFLASH_PROFILE"] = "1"
-
+    if args.profile_prefill:
+        os.environ["DFLASH_PROFILE_PREFILL"] = "1"
+    if args.middle_no_logits is not None:
+        os.environ["DFLASH_PREFILL_MIDDLE_NO_LOGITS"] = (
+            "1" if args.middle_no_logits else "0"
+        )
+    if args.slice_capture is not None:
+        os.environ["DFLASH_PREFILL_SLICE_CAPTURE"] = "1" if args.slice_capture else "0"
+    if args.skip_final_mlp is not None:
+        os.environ["DFLASH_PREFILL_SKIP_FINAL_MLP"] = (
+            "1" if args.skip_final_mlp else "0"
+        )
+    if args.skip_final_attention is not None:
+        os.environ["DFLASH_PREFILL_SKIP_FINAL_ATTENTION"] = (
+            "1" if args.skip_final_attention else "0"
+        )
+    if int(args.prefill_split_sdpa_threshold) > 0:
+        os.environ["DFLASH_PREFILL_SPLIT_SDPA_THRESHOLD"] = str(
+            int(args.prefill_split_sdpa_threshold)
+        )
+        os.environ["DFLASH_PREFILL_SPLIT_SDPA_CHUNK"] = str(
+            max(1, int(args.prefill_split_sdpa_chunk))
+        )
+    if args.hybrid_mlp:
+        if args.hybrid_mlp_threshold <= 0:
+            raise SystemExit("--hybrid-mlp-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_MLP"] = "1"
+        os.environ["DFLASH_HYBRID_MLP_THRESHOLD"] = str(args.hybrid_mlp_threshold)
+    if args.hybrid_gdn_proj:
+        if args.hybrid_gdn_proj_threshold <= 0:
+            raise SystemExit("--hybrid-gdn-proj-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_GDN_PROJ"] = "1"
+        os.environ["DFLASH_HYBRID_GDN_PROJ_THRESHOLD"] = str(
+            args.hybrid_gdn_proj_threshold
+        )
+    if args.hybrid_gdn_linear:
+        if args.hybrid_gdn_linear_threshold <= 0:
+            raise SystemExit("--hybrid-gdn-linear-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_GDN_LINEAR"] = "1"
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_THRESHOLD"] = str(
+            args.hybrid_gdn_linear_threshold
+        )
+        if args.hybrid_gdn_linear_attrs:
+            os.environ["DFLASH_HYBRID_GDN_LINEAR_ATTRS"] = str(
+                args.hybrid_gdn_linear_attrs
+            )
     prompt_text = args.prompt
     if args.prompt_file:
         prompt_text = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
 
-    target_model, tokenizer, _ = load_target_bundle(
+    target_model, tokenizer, target_meta = load_target_bundle(
         args.model,
         lazy=True,
         split_full_attention_sdpa=bool(args.split_sdpa),
@@ -469,6 +716,8 @@ def main() -> None:
                 scenario = SCENARIOS[name]
                 env = dict(scenario.get("env") or {})
                 with patched_env(env):
+                    row_start = time.perf_counter()
+                    row_memory_before = _mlx_memory_snapshot()
                     capture_path = (
                         _capture_path_for_run(
                             args.metal_capture,
@@ -502,6 +751,12 @@ def main() -> None:
                                 stream_dflash_generate(
                                     **run_kwargs,
                                     return_prompt_cache=True,
+                                    prompt_cache_checkpoint_tokens=int(
+                                        args.prompt_cache_checkpoint_tokens
+                                    ),
+                                    prompt_cache_target_only_checkpoints=bool(
+                                        args.target_only_checkpoints
+                                    ),
                                 )
                             ),
                         )
@@ -511,6 +766,10 @@ def main() -> None:
                             lambda: generate_dflash_once(**run_kwargs),
                         )
                     row = _compact_result(row_name, run_index, result, scenario)
+                    row["run_wall_ms"] = (time.perf_counter() - row_start) * 1_000.0
+                    row["mlx_memory_before"] = row_memory_before
+                    row["mlx_memory_after"] = _mlx_memory_snapshot()
+                    row["env"] = dict(env)
                     if capture_path is not None:
                         row["metal_capture"] = str(capture_path)
                     rows.append(row)
@@ -532,6 +791,12 @@ def main() -> None:
                                 stream_dflash_generate(
                                     **reuse_kwargs,
                                     return_prompt_cache=True,
+                                    prompt_cache_checkpoint_tokens=int(
+                                        args.prompt_cache_checkpoint_tokens
+                                    ),
+                                    prompt_cache_target_only_checkpoints=bool(
+                                        args.target_only_checkpoints
+                                    ),
                                 )
                             ),
                         )
@@ -553,6 +818,13 @@ def main() -> None:
             break
 
     report = {
+        "metadata": {
+            "created_at_s": time.time(),
+            "device": _device_metadata(),
+            "mlx_memory_config": mlx_memory_config,
+            "target_meta": target_meta,
+            "env": _filtered_env(),
+        },
         "model": args.model,
         "draft": args.draft,
         "prompt_tokens": len(prompt_tokens),
@@ -560,11 +832,22 @@ def main() -> None:
         "prefill_step_size": int(args.prefill_step_size),
         "prefill_step_sizes": list(prefill_step_sizes),
         "quantize_kv_cache": bool(args.quantize_kv_cache),
+        "mlx_cache_fraction": args.mlx_cache_fraction,
+        "hybrid_mlp": bool(args.hybrid_mlp),
+        "hybrid_mlp_threshold": int(args.hybrid_mlp_threshold),
+        "hybrid_gdn_proj": bool(args.hybrid_gdn_proj),
+        "hybrid_gdn_proj_threshold": int(args.hybrid_gdn_proj_threshold),
+        "hybrid_gdn_linear": bool(args.hybrid_gdn_linear),
+        "hybrid_gdn_linear_threshold": int(args.hybrid_gdn_linear_threshold),
+        "hybrid_gdn_linear_attrs": args.hybrid_gdn_linear_attrs,
         "kv_cache_bits": int(args.kv_cache_bits),
         "kv_cache_group_size": int(args.kv_cache_group_size),
         "return_prompt_cache": bool(args.return_prompt_cache),
+        "prompt_cache_checkpoint_tokens": int(args.prompt_cache_checkpoint_tokens),
+        "target_only_checkpoints": bool(args.target_only_checkpoints),
         "reuse_suffix_tokens": int(args.reuse_suffix_tokens),
         "profile": bool(args.profile),
+        "profile_prefill": bool(args.profile_prefill),
         "metal_capture": args.metal_capture,
         "max_seconds": max_seconds,
         "stopped_by_budget": bool(stopped_by_budget),

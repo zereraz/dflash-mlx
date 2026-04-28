@@ -1,0 +1,1196 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "prompt_tokens": 512,
+  "hybrid_mlp": true,
+  "hybrid_mlp_threshold": 256,
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "target_meta": {
+    "resolved_model_ref": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+    "config": {
+      "architectures": [
+        "Qwen3_5ForConditionalGeneration"
+      ],
+      "image_token_id": 248056,
+      "language_model_only": false,
+      "model_type": "qwen3_5",
+      "text_config": {
+        "attention_bias": false,
+        "attention_dropout": 0.0,
+        "attn_output_gate": true,
+        "bos_token_id": 248044,
+        "dtype": "bfloat16",
+        "eos_token_id": 248044,
+        "full_attention_interval": 4,
+        "head_dim": 256,
+        "hidden_act": "silu",
+        "hidden_size": 5120,
+        "initializer_range": 0.02,
+        "intermediate_size": 17408,
+        "layer_types": [
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention",
+          "linear_attention",
+          "linear_attention",
+          "linear_attention",
+          "full_attention"
+        ],
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 128,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 48,
+        "linear_value_head_dim": 128,
+        "mamba_ssm_dtype": "float32",
+        "max_position_embeddings": 262144,
+        "model_type": "qwen3_5_text",
+        "mtp_num_hidden_layers": 1,
+        "mtp_use_dedicated_embeddings": false,
+        "num_attention_heads": 24,
+        "num_hidden_layers": 64,
+        "num_key_value_heads": 4,
+        "output_gate_type": "swish",
+        "pad_token_id": null,
+        "partial_rotary_factor": 0.25,
+        "rms_norm_eps": 1e-06,
+        "rope_parameters": {
+          "mrope_interleaved": true,
+          "mrope_section": [
+            11,
+            11,
+            10
+          ],
+          "partial_rotary_factor": 0.25,
+          "rope_theta": 10000000,
+          "type": "default"
+        },
+        "tie_word_embeddings": false,
+        "use_cache": true,
+        "vocab_size": 248320
+      },
+      "tie_word_embeddings": false,
+      "transformers_version": "4.57.1",
+      "video_token_id": 248057,
+      "vision_config": {
+        "deepstack_visual_indexes": [],
+        "depth": 27,
+        "hidden_act": "gelu_pytorch_tanh",
+        "hidden_size": 1152,
+        "in_channels": 3,
+        "initializer_range": 0.02,
+        "intermediate_size": 4304,
+        "model_type": "qwen3_5",
+        "num_heads": 16,
+        "num_position_embeddings": 2304,
+        "out_hidden_size": 5120,
+        "patch_size": 16,
+        "spatial_merge_size": 2,
+        "temporal_patch_size": 2
+      },
+      "vision_end_token_id": 248054,
+      "vision_start_token_id": 248053,
+      "quantization": {
+        "group_size": 64,
+        "bits": 4,
+        "language_model.model.embed_tokens": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.3.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.3.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.7.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.7.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.11.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.11.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.15.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.15.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.19.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.19.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.23.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.23.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.27.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.27.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.31.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.31.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.35.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.35.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.39.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.39.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.43.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.43.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.47.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.47.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.51.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.51.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.55.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.55.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.59.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.59.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.63.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.63.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.lm_head": {
+          "bits": 8,
+          "group_size": 64
+        }
+      },
+      "quantization_config": {
+        "group_size": 64,
+        "bits": 4,
+        "language_model.model.embed_tokens": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.3.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.3.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.7.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.7.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.11.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.11.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.15.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.15.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.19.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.19.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.23.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.23.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.27.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.27.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.31.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.31.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.35.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.35.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.39.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.39.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.43.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.43.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.47.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.47.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.51.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.51.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.55.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.55.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.59.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.59.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.63.self_attn.k_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.model.layers.63.self_attn.v_proj": {
+          "bits": 8,
+          "group_size": 64
+        },
+        "language_model.lm_head": {
+          "bits": 8,
+          "group_size": 64
+        }
+      },
+      "eos_token_id": [
+        248046,
+        248044
+      ]
+    },
+    "quantize_kv_cache": false,
+    "kv_cache_bits": 8,
+    "kv_cache_group_size": 64,
+    "target_family": "hybrid_gdn",
+    "hybrid_mlp": {
+      "enabled": true,
+      "threshold": 256,
+      "layers": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        59,
+        60,
+        61,
+        62,
+        63
+      ],
+      "linears": 192,
+      "weight_nbytes": 34225520640
+    },
+    "verify_linear_swapped": 368
+  },
+  "component_summary_us": {
+    "embed": {
+      "total_us": 73209.416,
+      "median_us": 73209.416,
+      "count": 1.0
+    },
+    "input_norm": {
+      "total_us": 17683.706,
+      "median_us": 240.438,
+      "count": 64.0
+    },
+    "attention": {
+      "total_us": 1072369.463,
+      "median_us": 16581.999499999998,
+      "count": 64.0
+    },
+    "attention_residual": {
+      "total_us": 25229.914,
+      "median_us": 275.75,
+      "count": 64.0
+    },
+    "post_norm": {
+      "total_us": 19359.168,
+      "median_us": 243.16649999999998,
+      "count": 64.0
+    },
+    "mlp": {
+      "total_us": 1441210.835,
+      "median_us": 22379.4165,
+      "count": 64.0
+    },
+    "mlp_residual": {
+      "total_us": 20166.832,
+      "median_us": 277.0,
+      "count": 64.0
+    }
+  },
+  "layer_rows": [
+    {
+      "layer": 0,
+      "kind": "linear",
+      "input_norm_us": 559.375,
+      "attention_us": 28588.917,
+      "attention_residual_us": 506.375,
+      "post_norm_us": 245.458,
+      "mlp_us": 23710.167,
+      "mlp_residual_us": 461.5
+    },
+    {
+      "layer": 1,
+      "kind": "linear",
+      "input_norm_us": 244.458,
+      "attention_us": 16221.75,
+      "attention_residual_us": 247.25,
+      "post_norm_us": 217.5,
+      "mlp_us": 21761.167,
+      "mlp_residual_us": 313.292
+    },
+    {
+      "layer": 2,
+      "kind": "linear",
+      "input_norm_us": 222.209,
+      "attention_us": 16772.375,
+      "attention_residual_us": 1415.042,
+      "post_norm_us": 1127.375,
+      "mlp_us": 22241.75,
+      "mlp_residual_us": 254.625
+    },
+    {
+      "layer": 3,
+      "kind": "full",
+      "input_norm_us": 248.375,
+      "attention_us": 15339.584,
+      "attention_residual_us": 385.458,
+      "post_norm_us": 246.334,
+      "mlp_us": 22069.5,
+      "mlp_residual_us": 270.25
+    },
+    {
+      "layer": 4,
+      "kind": "linear",
+      "input_norm_us": 226.375,
+      "attention_us": 16507.0,
+      "attention_residual_us": 289.041,
+      "post_norm_us": 272.583,
+      "mlp_us": 22097.917,
+      "mlp_residual_us": 260.208
+    },
+    {
+      "layer": 5,
+      "kind": "linear",
+      "input_norm_us": 217.25,
+      "attention_us": 16486.5,
+      "attention_residual_us": 1186.375,
+      "post_norm_us": 405.583,
+      "mlp_us": 22161.875,
+      "mlp_residual_us": 276.583
+    },
+    {
+      "layer": 6,
+      "kind": "linear",
+      "input_norm_us": 266.916,
+      "attention_us": 17513.417,
+      "attention_residual_us": 245.167,
+      "post_norm_us": 233.333,
+      "mlp_us": 21735.083,
+      "mlp_residual_us": 262.083
+    },
+    {
+      "layer": 7,
+      "kind": "full",
+      "input_norm_us": 235.083,
+      "attention_us": 15862.083,
+      "attention_residual_us": 652.792,
+      "post_norm_us": 272.5,
+      "mlp_us": 21709.083,
+      "mlp_residual_us": 553.041
+    },
+    {
+      "layer": 8,
+      "kind": "linear",
+      "input_norm_us": 211.875,
+      "attention_us": 17299.792,
+      "attention_residual_us": 241.375,
+      "post_norm_us": 220.833,
+      "mlp_us": 21647.5,
+      "mlp_residual_us": 288.333
+    },
+    {
+      "layer": 9,
+      "kind": "linear",
+      "input_norm_us": 309.25,
+      "attention_us": 16854.959,
+      "attention_residual_us": 294.375,
+      "post_norm_us": 340.833,
+      "mlp_us": 22090.5,
+      "mlp_residual_us": 236.625
+    },
+    {
+      "layer": 10,
+      "kind": "linear",
+      "input_norm_us": 231.667,
+      "attention_us": 16536.917,
+      "attention_residual_us": 246.375,
+      "post_norm_us": 239.708,
+      "mlp_us": 22134.667,
+      "mlp_residual_us": 243.25
+    },
+    {
+      "layer": 11,
+      "kind": "full",
+      "input_norm_us": 229.209,
+      "attention_us": 15752.625,
+      "attention_residual_us": 647.334,
+      "post_norm_us": 248.875,
+      "mlp_us": 21746.292,
+      "mlp_residual_us": 306.166
+    },
+    {
+      "layer": 12,
+      "kind": "linear",
+      "input_norm_us": 249.25,
+      "attention_us": 16724.084,
+      "attention_residual_us": 237.791,
+      "post_norm_us": 249.25,
+      "mlp_us": 22298.917,
+      "mlp_residual_us": 329.959
+    },
+    {
+      "layer": 13,
+      "kind": "linear",
+      "input_norm_us": 242.834,
+      "attention_us": 17727.875,
+      "attention_residual_us": 1297.792,
+      "post_norm_us": 702.958,
+      "mlp_us": 21994.792,
+      "mlp_residual_us": 312.541
+    },
+    {
+      "layer": 14,
+      "kind": "linear",
+      "input_norm_us": 245.084,
+      "attention_us": 16473.041,
+      "attention_residual_us": 280.166,
+      "post_norm_us": 231.209,
+      "mlp_us": 22091.708,
+      "mlp_residual_us": 243.125
+    },
+    {
+      "layer": 15,
+      "kind": "full",
+      "input_norm_us": 222.292,
+      "attention_us": 15400.083,
+      "attention_residual_us": 394.75,
+      "post_norm_us": 254.083,
+      "mlp_us": 22267.917,
+      "mlp_residual_us": 242.583
+    },
+    {
+      "layer": 16,
+      "kind": "linear",
+      "input_norm_us": 215.666,
+      "attention_us": 17601.25,
+      "attention_residual_us": 249.459,
+      "post_norm_us": 224.625,
+      "mlp_us": 21677.167,
+      "mlp_residual_us": 273.25
+    },
+    {
+      "layer": 17,
+      "kind": "linear",
+      "input_norm_us": 237.5,
+      "attention_us": 16697.75,
+      "attention_residual_us": 255.709,
+      "post_norm_us": 267.0,
+      "mlp_us": 21638.833,
+      "mlp_residual_us": 230.041
+    },
+    {
+      "layer": 18,
+      "kind": "linear",
+      "input_norm_us": 220.75,
+      "attention_us": 16553.916,
+      "attention_residual_us": 315.083,
+      "post_norm_us": 469.25,
+      "mlp_us": 21853.583,
+      "mlp_residual_us": 270.292
+    },
+    {
+      "layer": 19,
+      "kind": "full",
+      "input_norm_us": 232.75,
+      "attention_us": 15034.0,
+      "attention_residual_us": 507.292,
+      "post_norm_us": 242.792,
+      "mlp_us": 21642.959,
+      "mlp_residual_us": 258.459
+    },
+    {
+      "layer": 20,
+      "kind": "linear",
+      "input_norm_us": 226.916,
+      "attention_us": 17177.542,
+      "attention_residual_us": 188.0,
+      "post_norm_us": 234.084,
+      "mlp_us": 22279.042,
+      "mlp_residual_us": 308.542
+    },
+    {
+      "layer": 21,
+      "kind": "linear",
+      "input_norm_us": 247.709,
+      "attention_us": 16515.0,
+      "attention_residual_us": 251.208,
+      "post_norm_us": 267.125,
+      "mlp_us": 21697.042,
+      "mlp_residual_us": 281.209
+    },
+    {
+      "layer": 22,
+      "kind": "linear",
+      "input_norm_us": 276.375,
+      "attention_us": 16231.75,
+      "attention_residual_us": 236.958,
+      "post_norm_us": 214.625,
+      "mlp_us": 21968.791,
+      "mlp_residual_us": 280.375
+    },
+    {
+      "layer": 23,
+      "kind": "full",
+      "input_norm_us": 286.709,
+      "attention_us": 15269.375,
+      "attention_residual_us": 419.083,
+      "post_norm_us": 237.959,
+      "mlp_us": 22187.833,
+      "mlp_residual_us": 320.834
+    },
+    {
+      "layer": 24,
+      "kind": "linear",
+      "input_norm_us": 294.875,
+      "attention_us": 16686.5,
+      "attention_residual_us": 321.292,
+      "post_norm_us": 243.083,
+      "mlp_us": 21649.0,
+      "mlp_residual_us": 251.041
+    },
+    {
+      "layer": 25,
+      "kind": "linear",
+      "input_norm_us": 232.041,
+      "attention_us": 16354.75,
+      "attention_residual_us": 286.541,
+      "post_norm_us": 231.084,
+      "mlp_us": 22833.125,
+      "mlp_residual_us": 263.791
+    },
+    {
+      "layer": 26,
+      "kind": "linear",
+      "input_norm_us": 305.25,
+      "attention_us": 17131.75,
+      "attention_residual_us": 322.084,
+      "post_norm_us": 249.166,
+      "mlp_us": 23318.667,
+      "mlp_residual_us": 266.959
+    },
+    {
+      "layer": 27,
+      "kind": "full",
+      "input_norm_us": 229.708,
+      "attention_us": 15975.916,
+      "attention_residual_us": 419.0,
+      "post_norm_us": 218.083,
+      "mlp_us": 23457.541,
+      "mlp_residual_us": 388.5
+    },
+    {
+      "layer": 28,
+      "kind": "linear",
+      "input_norm_us": 260.333,
+      "attention_us": 18015.042,
+      "attention_residual_us": 269.291,
+      "post_norm_us": 242.708,
+      "mlp_us": 22804.834,
+      "mlp_residual_us": 313.792
+    },
+    {
+      "layer": 29,
+      "kind": "linear",
+      "input_norm_us": 238.041,
+      "attention_us": 16399.791,
+      "attention_residual_us": 284.959,
+      "post_norm_us": 240.375,
+      "mlp_us": 22121.583,
+      "mlp_residual_us": 253.708
+    },
+    {
+      "layer": 30,
+      "kind": "linear",
+      "input_norm_us": 237.208,
+      "attention_us": 16079.875,
+      "attention_residual_us": 245.917,
+      "post_norm_us": 226.375,
+      "mlp_us": 22818.584,
+      "mlp_residual_us": 283.167
+    },
+    {
+      "layer": 31,
+      "kind": "full",
+      "input_norm_us": 253.833,
+      "attention_us": 16069.083,
+      "attention_residual_us": 416.708,
+      "post_norm_us": 232.917,
+      "mlp_us": 23935.5,
+      "mlp_residual_us": 279.375
+    },
+    {
+      "layer": 32,
+      "kind": "linear",
+      "input_norm_us": 261.958,
+      "attention_us": 17340.292,
+      "attention_residual_us": 266.542,
+      "post_norm_us": 374.166,
+      "mlp_us": 23420.334,
+      "mlp_residual_us": 282.459
+    },
+    {
+      "layer": 33,
+      "kind": "linear",
+      "input_norm_us": 236.042,
+      "attention_us": 16995.417,
+      "attention_residual_us": 244.708,
+      "post_norm_us": 215.792,
+      "mlp_us": 22865.75,
+      "mlp_residual_us": 290.834
+    },
+    {
+      "layer": 34,
+      "kind": "linear",
+      "input_norm_us": 242.541,
+      "attention_us": 16300.875,
+      "attention_residual_us": 261.084,
+      "post_norm_us": 283.583,
+      "mlp_us": 24087.625,
+      "mlp_residual_us": 279.417
+    },
+    {
+      "layer": 35,
+      "kind": "full",
+      "input_norm_us": 321.291,
+      "attention_us": 15939.292,
+      "attention_residual_us": 446.708,
+      "post_norm_us": 231.334,
+      "mlp_us": 22819.875,
+      "mlp_residual_us": 594.083
+    },
+    {
+      "layer": 36,
+      "kind": "linear",
+      "input_norm_us": 236.0,
+      "attention_us": 16626.375,
+      "attention_residual_us": 273.708,
+      "post_norm_us": 226.0,
+      "mlp_us": 21941.542,
+      "mlp_residual_us": 318.334
+    },
+    {
+      "layer": 37,
+      "kind": "linear",
+      "input_norm_us": 259.625,
+      "attention_us": 16510.875,
+      "attention_residual_us": 244.167,
+      "post_norm_us": 728.75,
+      "mlp_us": 22561.0,
+      "mlp_residual_us": 270.458
+    },
+    {
+      "layer": 38,
+      "kind": "linear",
+      "input_norm_us": 228.417,
+      "attention_us": 17331.917,
+      "attention_residual_us": 268.333,
+      "post_norm_us": 243.25,
+      "mlp_us": 24037.041,
+      "mlp_residual_us": 617.167
+    },
+    {
+      "layer": 39,
+      "kind": "full",
+      "input_norm_us": 226.458,
+      "attention_us": 16542.125,
+      "attention_residual_us": 399.333,
+      "post_norm_us": 220.458,
+      "mlp_us": 22554.541,
+      "mlp_residual_us": 254.541
+    },
+    {
+      "layer": 40,
+      "kind": "linear",
+      "input_norm_us": 228.959,
+      "attention_us": 16829.625,
+      "attention_residual_us": 259.375,
+      "post_norm_us": 229.333,
+      "mlp_us": 22593.416,
+      "mlp_residual_us": 649.875
+    },
+    {
+      "layer": 41,
+      "kind": "linear",
+      "input_norm_us": 300.625,
+      "attention_us": 16356.042,
+      "attention_residual_us": 540.959,
+      "post_norm_us": 229.084,
+      "mlp_us": 22035.416,
+      "mlp_residual_us": 277.417
+    },
+    {
+      "layer": 42,
+      "kind": "linear",
+      "input_norm_us": 238.084,
+      "attention_us": 16757.416,
+      "attention_residual_us": 277.792,
+      "post_norm_us": 244.458,
+      "mlp_us": 22817.375,
+      "mlp_residual_us": 256.083
+    },
+    {
+      "layer": 43,
+      "kind": "full",
+      "input_norm_us": 239.834,
+      "attention_us": 15167.459,
+      "attention_residual_us": 402.417,
+      "post_norm_us": 244.375,
+      "mlp_us": 22854.375,
+      "mlp_residual_us": 256.042
+    },
+    {
+      "layer": 44,
+      "kind": "linear",
+      "input_norm_us": 297.875,
+      "attention_us": 16751.5,
+      "attention_residual_us": 266.0,
+      "post_norm_us": 228.792,
+      "mlp_us": 23189.583,
+      "mlp_residual_us": 242.625
+    },
+    {
+      "layer": 45,
+      "kind": "linear",
+      "input_norm_us": 241.042,
+      "attention_us": 17427.375,
+      "attention_residual_us": 233.125,
+      "post_norm_us": 234.375,
+      "mlp_us": 22894.042,
+      "mlp_residual_us": 261.833
+    },
+    {
+      "layer": 46,
+      "kind": "linear",
+      "input_norm_us": 236.791,
+      "attention_us": 16610.083,
+      "attention_residual_us": 263.25,
+      "post_norm_us": 268.833,
+      "mlp_us": 22328.416,
+      "mlp_residual_us": 1262.25
+    },
+    {
+      "layer": 47,
+      "kind": "full",
+      "input_norm_us": 1432.042,
+      "attention_us": 15413.125,
+      "attention_residual_us": 469.833,
+      "post_norm_us": 260.042,
+      "mlp_us": 23181.875,
+      "mlp_residual_us": 319.542
+    },
+    {
+      "layer": 48,
+      "kind": "linear",
+      "input_norm_us": 221.708,
+      "attention_us": 16999.958,
+      "attention_residual_us": 261.042,
+      "post_norm_us": 632.209,
+      "mlp_us": 22227.208,
+      "mlp_residual_us": 249.166
+    },
+    {
+      "layer": 49,
+      "kind": "linear",
+      "input_norm_us": 215.833,
+      "attention_us": 16771.834,
+      "attention_residual_us": 259.458,
+      "post_norm_us": 270.083,
+      "mlp_us": 23409.459,
+      "mlp_residual_us": 293.583
+    },
+    {
+      "layer": 50,
+      "kind": "linear",
+      "input_norm_us": 487.75,
+      "attention_us": 18155.834,
+      "attention_residual_us": 711.625,
+      "post_norm_us": 252.792,
+      "mlp_us": 22083.167,
+      "mlp_residual_us": 317.209
+    },
+    {
+      "layer": 51,
+      "kind": "full",
+      "input_norm_us": 272.167,
+      "attention_us": 15634.875,
+      "attention_residual_us": 384.25,
+      "post_norm_us": 235.25,
+      "mlp_us": 22461.417,
+      "mlp_residual_us": 321.666
+    },
+    {
+      "layer": 52,
+      "kind": "linear",
+      "input_norm_us": 423.958,
+      "attention_us": 16283.375,
+      "attention_residual_us": 254.166,
+      "post_norm_us": 256.083,
+      "mlp_us": 23152.708,
+      "mlp_residual_us": 303.125
+    },
+    {
+      "layer": 53,
+      "kind": "linear",
+      "input_norm_us": 236.75,
+      "attention_us": 17061.459,
+      "attention_residual_us": 270.958,
+      "post_norm_us": 252.375,
+      "mlp_us": 24066.667,
+      "mlp_residual_us": 277.75
+    },
+    {
+      "layer": 54,
+      "kind": "linear",
+      "input_norm_us": 251.625,
+      "attention_us": 17635.292,
+      "attention_residual_us": 251.958,
+      "post_norm_us": 221.959,
+      "mlp_us": 22994.375,
+      "mlp_residual_us": 259.584
+    },
+    {
+      "layer": 55,
+      "kind": "full",
+      "input_norm_us": 242.791,
+      "attention_us": 15361.459,
+      "attention_residual_us": 384.5,
+      "post_norm_us": 226.792,
+      "mlp_us": 22813.833,
+      "mlp_residual_us": 246.75
+    },
+    {
+      "layer": 56,
+      "kind": "linear",
+      "input_norm_us": 279.208,
+      "attention_us": 16400.625,
+      "attention_residual_us": 246.375,
+      "post_norm_us": 265.291,
+      "mlp_us": 22587.333,
+      "mlp_residual_us": 251.541
+    },
+    {
+      "layer": 57,
+      "kind": "linear",
+      "input_norm_us": 246.959,
+      "attention_us": 17875.542,
+      "attention_residual_us": 259.75,
+      "post_norm_us": 378.0,
+      "mlp_us": 22430.417,
+      "mlp_residual_us": 267.958
+    },
+    {
+      "layer": 58,
+      "kind": "linear",
+      "input_norm_us": 243.625,
+      "attention_us": 16824.459,
+      "attention_residual_us": 248.541,
+      "post_norm_us": 225.333,
+      "mlp_us": 22560.708,
+      "mlp_residual_us": 293.917
+    },
+    {
+      "layer": 59,
+      "kind": "full",
+      "input_norm_us": 263.083,
+      "attention_us": 16376.458,
+      "attention_residual_us": 464.916,
+      "post_norm_us": 270.667,
+      "mlp_us": 23344.709,
+      "mlp_residual_us": 253.125
+    },
+    {
+      "layer": 60,
+      "kind": "linear",
+      "input_norm_us": 233.0,
+      "attention_us": 16755.125,
+      "attention_residual_us": 267.541,
+      "post_norm_us": 231.084,
+      "mlp_us": 22528.75,
+      "mlp_residual_us": 240.833
+    },
+    {
+      "layer": 61,
+      "kind": "linear",
+      "input_norm_us": 222.708,
+      "attention_us": 16927.25,
+      "attention_residual_us": 1338.125,
+      "post_norm_us": 1180.333,
+      "mlp_us": 22034.042,
+      "mlp_residual_us": 242.333
+    },
+    {
+      "layer": 62,
+      "kind": "linear",
+      "input_norm_us": 223.25,
+      "attention_us": 16943.167,
+      "attention_residual_us": 241.916,
+      "post_norm_us": 216.292,
+      "mlp_us": 22719.667,
+      "mlp_residual_us": 278.916
+    },
+    {
+      "layer": 63,
+      "kind": "full",
+      "input_norm_us": 234.541,
+      "attention_us": 15608.666,
+      "attention_residual_us": 711.417,
+      "post_norm_us": 232.334,
+      "mlp_us": 21971.25,
+      "mlp_residual_us": 258.917
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 20000,
+  "prefill_step_size": 2048,
+  "scenarios": "auto_b16",
+  "threshold": 256,
+  "pairs": 1,
+  "order": [
+    "q4",
+    "hybrid"
+  ],
+  "trials": [
+    {
+      "variant": "q4",
+      "pair": 1,
+      "prefill_ms": 104114.053125,
+      "wall_s": 113.88108754111454,
+      "output": "benchmark/results/prefill-ab-20000-auto-current/q4-p20000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 91129.778125,
+      "wall_s": 101.75388483284041,
+      "output": "benchmark/results/prefill-ab-20000-auto-current/hybrid-p20000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "q4": {
+      "count": 1.0,
+      "best_ms": 104114.053125,
+      "median_ms": 104114.053125,
+      "mean_ms": 104114.053125
+    },
+    "hybrid": {
+      "count": 1.0,
+      "best_ms": 91129.778125,
+      "median_ms": 91129.778125,
+      "mean_ms": 91129.778125
+    }
+  },
+  "hybrid_vs_q4_median_speedup": 1.1424811435641802,
+  "hybrid_vs_q4_median_delta_ms": 12984.275000000009
+}

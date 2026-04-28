@@ -6,7 +6,10 @@ import importlib
 import json
 import sys
 import time
+from contextlib import nullcontext
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from threading import RLock
 from typing import Any, Optional
 
 import mlx.core as mx
@@ -49,6 +52,15 @@ def _load_cache_class(name: str):
 
 def _cache_nbytes(prompt_cache: list[Any]) -> int:
     return int(sum(int(getattr(cache, "nbytes", 0) or 0) for cache in prompt_cache))
+
+
+def _cache_arrays(prompt_cache: list[Any]) -> list[mx.array]:
+    arrays: list[mx.array] = []
+    for cache in prompt_cache:
+        for _, value in tree_flatten(cache.state):
+            if isinstance(value, mx.array):
+                arrays.append(value)
+    return arrays
 
 
 def save_dflash_prompt_cache(
@@ -98,12 +110,22 @@ class DiskBackedPromptCache:
         directory: str | Path,
         ttl_seconds: float = 7 * 24 * 60 * 60,
         max_bytes: Optional[int] = None,
+        async_writes: bool = False,
     ) -> None:
         self.memory_cache = memory_cache
         self.directory = Path(directory).expanduser()
         self.directory.mkdir(parents=True, exist_ok=True)
         self.ttl_seconds = max(0.0, float(ttl_seconds))
         self.max_bytes = int(max_bytes) if max_bytes and int(max_bytes) > 0 else None
+        self.async_writes = bool(async_writes)
+        self._disk_lock = RLock()
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._write_futures: list[Future] = []
+        if self.async_writes:
+            self._executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="dflash-prompt-cache",
+            )
         self.prune_stale()
 
     @property
@@ -157,36 +179,39 @@ class DiskBackedPromptCache:
                 pass
 
     def prune_stale(self) -> None:
-        now = time.time()
-        entries = self._iter_metadata()
-        if self.ttl_seconds > 0:
-            for cache_path, json_path, meta in entries:
-                accessed_at = float(meta.get("accessed_at", meta.get("created_at", 0)) or 0)
-                if now - accessed_at > self.ttl_seconds:
-                    self._unlink_pair(cache_path, json_path)
+        with self._disk_lock:
+            now = time.time()
             entries = self._iter_metadata()
+            if self.ttl_seconds > 0:
+                for cache_path, json_path, meta in entries:
+                    accessed_at = float(
+                        meta.get("accessed_at", meta.get("created_at", 0)) or 0
+                    )
+                    if now - accessed_at > self.ttl_seconds:
+                        self._unlink_pair(cache_path, json_path)
+                entries = self._iter_metadata()
 
-        if self.max_bytes is None:
-            return
+            if self.max_bytes is None:
+                return
 
-        total_bytes = sum(
-            int(meta.get("nbytes", 0) or 0)
-            for _, _, meta in entries
-        )
-        if total_bytes <= self.max_bytes:
-            return
-
-        ordered = sorted(
-            entries,
-            key=lambda item: float(
-                item[2].get("accessed_at", item[2].get("created_at", 0)) or 0
-            ),
-        )
-        for cache_path, json_path, meta in ordered:
+            total_bytes = sum(
+                int(meta.get("nbytes", 0) or 0)
+                for _, _, meta in entries
+            )
             if total_bytes <= self.max_bytes:
-                break
-            total_bytes -= int(meta.get("nbytes", 0) or 0)
-            self._unlink_pair(cache_path, json_path)
+                return
+
+            ordered = sorted(
+                entries,
+                key=lambda item: float(
+                    item[2].get("accessed_at", item[2].get("created_at", 0)) or 0
+                ),
+            )
+            for cache_path, json_path, meta in ordered:
+                if total_bytes <= self.max_bytes:
+                    break
+                total_bytes -= int(meta.get("nbytes", 0) or 0)
+                self._unlink_pair(cache_path, json_path)
 
     def fetch_nearest_cache(
         self,
@@ -199,32 +224,34 @@ class DiskBackedPromptCache:
 
         model_hash = self._model_hash(model_key)
         best: tuple[int, Path, Path, dict[str, Any]] | None = None
-        for cache_path, json_path, meta in self._iter_metadata():
-            if meta.get("model_hash") != model_hash:
-                continue
-            cached_tokens = [int(token) for token in meta.get("tokens", [])]
-            cached_len = len(cached_tokens)
-            if cached_len <= 0 or cached_len > len(tokens):
-                continue
-            if tokens[:cached_len] != cached_tokens:
-                continue
-            if best is None or cached_len > best[0]:
-                best = (cached_len, cache_path, json_path, meta)
+        with self._disk_lock:
+            for cache_path, json_path, meta in self._iter_metadata():
+                if meta.get("model_hash") != model_hash:
+                    continue
+                cached_tokens = [int(token) for token in meta.get("tokens", [])]
+                cached_len = len(cached_tokens)
+                if cached_len <= 0 or cached_len > len(tokens):
+                    continue
+                if tokens[:cached_len] != cached_tokens:
+                    continue
+                if best is None or cached_len > best[0]:
+                    best = (cached_len, cache_path, json_path, meta)
 
         if best is None:
             return None, tokens
 
         cached_len, cache_path, json_path, meta = best
-        try:
-            prompt_cache, _ = load_dflash_prompt_cache(cache_path)
-        except Exception:
-            self._unlink_pair(cache_path, json_path)
-            return None, tokens
-        meta["accessed_at"] = time.time()
-        try:
-            json_path.write_text(json.dumps(meta, separators=(",", ":")), encoding="utf-8")
-        except OSError:
-            pass
+        with self._disk_lock:
+            try:
+                prompt_cache, _ = load_dflash_prompt_cache(cache_path)
+            except Exception:
+                self._unlink_pair(cache_path, json_path)
+                return None, tokens
+            meta["accessed_at"] = time.time()
+            try:
+                json_path.write_text(json.dumps(meta, separators=(",", ":")), encoding="utf-8")
+            except OSError:
+                pass
         self.memory_cache.insert_cache(
             model_key,
             list(meta["tokens"]),
@@ -247,8 +274,65 @@ class DiskBackedPromptCache:
             prompt_cache,
             cache_type=cache_type,
         )
+        if self.async_writes and self._executor is not None:
+            self._collect_finished_writes()
+            # The caller follows mlx-lm's LRUPromptCache contract: live caches
+            # that will keep mutating are deep-copied before insertion. Reuse
+            # that owned snapshot for disk too, avoiding a second full cache
+            # copy on checkpoint-heavy M3 Max chat sessions.
+            arrays = _cache_arrays(prompt_cache)
+            if arrays:
+                mx.eval(*arrays)
+            future = self._executor.submit(
+                self._safe_insert_disk,
+                model_key,
+                list(tokens),
+                prompt_cache,
+                cache_type,
+            )
+            self._write_futures.append(future)
+        else:
+            self._safe_insert_disk(model_key, tokens, prompt_cache, cache_type)
+
+    def _collect_finished_writes(self) -> None:
+        pending: list[Future] = []
+        for future in self._write_futures:
+            if not future.done():
+                pending.append(future)
+                continue
+            try:
+                future.result()
+            except Exception as exc:
+                sys.stderr.write(f"[dflash] disk prompt cache save failed: {exc}\n")
+                sys.stderr.flush()
+        self._write_futures = pending
+
+    def wait_for_pending_writes(self) -> None:
+        futures = list(self._write_futures)
+        self._write_futures = []
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:
+                sys.stderr.write(f"[dflash] disk prompt cache save failed: {exc}\n")
+                sys.stderr.flush()
+
+    def _safe_insert_disk(
+        self,
+        model_key: Any,
+        tokens: list[int],
+        prompt_cache: list[Any],
+        cache_type: str,
+    ) -> None:
         try:
-            self._insert_disk(model_key, tokens, prompt_cache, cache_type=cache_type)
+            stream_context = nullcontext()
+            if self.async_writes and mx.metal.is_available():
+                # Background Python threads do not inherit MLX's thread-local
+                # GPU stream. Saving MLX arrays needs an explicit stream here.
+                stream_context = mx.stream(mx.new_stream(mx.gpu))
+            with stream_context:
+                with self._disk_lock:
+                    self._insert_disk(model_key, tokens, prompt_cache, cache_type=cache_type)
         except Exception as exc:
             sys.stderr.write(f"[dflash] disk prompt cache save failed: {exc}\n")
             sys.stderr.flush()

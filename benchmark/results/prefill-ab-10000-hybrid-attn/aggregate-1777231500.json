@@ -1,0 +1,42 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "threshold": 256,
+  "pairs": 1,
+  "order": [
+    "hybrid",
+    "hybrid_attn"
+  ],
+  "trials": [
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 47822.78458299999,
+      "wall_s": 53.23757991567254,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-attn/hybrid-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_attn",
+      "pair": 1,
+      "prefill_ms": 45783.83575,
+      "wall_s": 52.047049707733095,
+      "output": "benchmark/results/prefill-ab-10000-hybrid-attn/hybrid_attn-p10000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "hybrid": {
+      "count": 1.0,
+      "best_ms": 47822.78458299999,
+      "median_ms": 47822.78458299999,
+      "mean_ms": 47822.78458299999
+    },
+    "hybrid_attn": {
+      "count": 1.0,
+      "best_ms": 45783.83575,
+      "median_ms": 45783.83575,
+      "mean_ms": 45783.83575
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "shape": {
+    "layers": 4,
+    "heads": 16,
+    "tokens": 8192,
+    "dim": 128,
+    "nbytes": 268435456
+  },
+  "sync": {
+    "insert_return_ms": 434.759625,
+    "wait_ms": 0.001208,
+    "total_ms": 434.76083300000005
+  },
+  "async": {
+    "insert_return_ms": 1.791791,
+    "wait_ms": 415.307125,
+    "total_ms": 417.098916
+  },
+  "request_thread_blocking_reduction_ms": 432.96783400000004
+}

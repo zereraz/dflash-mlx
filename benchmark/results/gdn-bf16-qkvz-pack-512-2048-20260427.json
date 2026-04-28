@@ -1,0 +1,112 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "layer": 0,
+  "m_values": [
+    512,
+    1024,
+    2048
+  ],
+  "repeats": 5,
+  "warmup": 2,
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "target_meta": {
+    "resolved_model_ref": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+    "quantize_kv_cache": false,
+    "kv_cache_bits": 8,
+    "kv_cache_group_size": 64,
+    "target_family": "hybrid_gdn"
+  },
+  "separate_bf16_weight_nbytes": 167772160,
+  "packed_bf16_weight_nbytes": 167772160,
+  "qkv_dim": 10240,
+  "z_dim": 6144,
+  "rows": {
+    "512": {
+      "max_abs_diff": 0.0,
+      "separate": {
+        "best_ms": 7.023958,
+        "median_ms": 7.030125,
+        "samples_ms": [
+          7.023958,
+          7.030125,
+          7.049,
+          7.046333,
+          7.029583
+        ]
+      },
+      "packed": {
+        "best_ms": 7.016125,
+        "median_ms": 7.075625,
+        "samples_ms": [
+          7.016125,
+          7.075625,
+          7.109084,
+          7.0225,
+          7.59775
+        ]
+      },
+      "packed_best_speedup": 1.0011164282278324,
+      "packed_median_speedup": 0.9935694726614257
+    },
+    "1024": {
+      "max_abs_diff": 0.0,
+      "separate": {
+        "best_ms": 13.598,
+        "median_ms": 13.627334,
+        "samples_ms": [
+          13.601,
+          13.598,
+          13.64975,
+          14.240084,
+          13.627334
+        ]
+      },
+      "packed": {
+        "best_ms": 13.602875,
+        "median_ms": 13.624375,
+        "samples_ms": [
+          14.065459,
+          13.602875,
+          13.603708,
+          13.624375,
+          14.377583
+        ]
+      },
+      "packed_best_speedup": 0.9996416198781509,
+      "packed_median_speedup": 1.000217184274508
+    },
+    "2048": {
+      "max_abs_diff": 0.0,
+      "separate": {
+        "best_ms": 26.865417,
+        "median_ms": 26.872292,
+        "samples_ms": [
+          26.865417,
+          26.873459,
+          26.872292,
+          27.60225,
+          26.869291
+        ]
+      },
+      "packed": {
+        "best_ms": 26.822709,
+        "median_ms": 26.872708,
+        "samples_ms": [
+          27.195084,
+          26.822709,
+          27.552083,
+          26.872708,
+          26.83175
+        ]
+      },
+      "packed_best_speedup": 1.001592232909808,
+      "packed_median_speedup": 0.9999845196100073
+    }
+  }
+}

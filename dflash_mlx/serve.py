@@ -5,10 +5,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 import os
 import logging
+import platform
+import subprocess
 import threading
 import time
 import warnings
@@ -45,6 +48,7 @@ _STATEFUL_SERVER_API = "state" in getattr(mlx_server.Response, "__annotations__"
 _METRICS_LOG_ENV = "DFLASH_METRICS_LOG"
 _METRICS_TOKEN_INTERVAL_ENV = "DFLASH_METRICS_TOKEN_INTERVAL"
 _PROMPT_CACHE_DIR_ENV = "DFLASH_PROMPT_CACHE_DIR"
+_PROMPT_CACHE_CHECKPOINT_TOKENS_ENV = "DFLASH_PROMPT_CACHE_CHECKPOINT_TOKENS"
 _METRICS_LOG_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
@@ -75,6 +79,16 @@ def _dflash_prompt_cache_dir(cli_args: Any) -> Optional[str]:
     if path is None or str(path).strip() == "":
         return None
     return os.path.expanduser(str(path))
+
+
+def _dflash_prompt_cache_checkpoint_tokens(cli_args: Any) -> int:
+    raw_value = getattr(cli_args, "dflash_prompt_cache_checkpoint_tokens", 0)
+    if not raw_value:
+        raw_value = os.environ.get(_PROMPT_CACHE_CHECKPOINT_TOKENS_ENV, "0").strip()
+    try:
+        return max(0, int(raw_value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _kv_cache_bits(cli_args: Any) -> int:
@@ -191,6 +205,9 @@ def _build_dflash_metrics_record(
         "prefill_skip_capture": bool(summary_event.get("prefill_skip_capture", False)),
         "prefill_context_tokens": int(
             summary_event.get("prefill_context_tokens", 0) or 0
+        ),
+        "prompt_cache_target_only_checkpoints": bool(
+            summary_event.get("prompt_cache_target_only_checkpoints", False)
         ),
         "cache_only_prefill": bool(summary_event.get("cache_only_prefill", False)),
         "dflash_generation_tokens": int(
@@ -348,6 +365,18 @@ def _stabilize_dflash_prompt_cache_chat_template_args(cli_args: Any) -> None:
             **chat_template_args,
             "preserve_thinking": True,
         }
+
+
+def _apply_prefill_cache_strategy_args(cli_args: Any) -> None:
+    fastpath = getattr(cli_args, "prefill_cache_fastpath", None)
+    if fastpath is None:
+        return
+    if fastpath:
+        os.environ["DFLASH_PREFILL_CACHE_FASTPATH"] = "1"
+        os.environ["DFLASH_PREFILL_DEFER_DRAFT_CONTEXT"] = "0"
+    else:
+        os.environ["DFLASH_PREFILL_CACHE_FASTPATH"] = "0"
+        os.environ["DFLASH_PREFILL_DEFER_DRAFT_CONTEXT"] = "1"
 
 
 def _auto_dflash_prefill_step_size(prompt_len: int) -> int:
@@ -611,6 +640,7 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                             )
                             sys.stderr.flush()
                         stable_summary: Optional[dict[str, Any]] = None
+                        last_stable_progress: Optional[tuple[int, int]] = None
                         for stable_event in stream_dflash_generate(
                             target_model=model,
                             tokenizer=tokenizer,
@@ -641,6 +671,16 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                             prompt_cache=stable_cache,
                             prompt_cache_count=stable_cache_count,
                             return_prompt_cache=True,
+                            prompt_cache_checkpoint_tokens=(
+                                _dflash_prompt_cache_checkpoint_tokens(cli_args)
+                            ),
+                            prompt_cache_target_only_checkpoints=bool(
+                                getattr(
+                                    cli_args,
+                                    "dflash_target_only_prompt_cache_checkpoints",
+                                    False,
+                                )
+                            ),
                         ):
                             if stable_event.get("event") in (
                                 "prefill",
@@ -667,22 +707,49 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                 elapsed_s = (
                                     time.perf_counter_ns() - request_start_ns
                                 ) / 1e9
-                                sys.stderr.write(
-                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] stable prefill: "
-                                    f"{processed}/{total} tokens | {elapsed_s:.1f}s\n"
+                                progress_key = (processed, total)
+                                if progress_key != last_stable_progress:
+                                    last_stable_progress = progress_key
+                                    sys.stderr.write(
+                                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] stable prefill: "
+                                        f"{processed}/{total} tokens | {elapsed_s:.1f}s\n"
+                                    )
+                                    sys.stderr.flush()
+                                    _append_dflash_metrics_event(
+                                        cli_args,
+                                        {
+                                            "event": "stable_prefill_progress",
+                                            "request_id": request_id,
+                                            "prompt_tokens": len(prompt),
+                                            "tokens_processed": processed,
+                                            "tokens_total": total,
+                                            "elapsed_ms": elapsed_s * 1_000.0,
+                                        },
+                                    )
+                            if stable_event.get("event") == "prompt_cache_checkpoint":
+                                checkpoint_cache = stable_event.get("prompt_cache")
+                                checkpoint_tokens = int(
+                                    stable_event.get("tokens_processed", 0) or 0
                                 )
-                                sys.stderr.flush()
-                                _append_dflash_metrics_event(
-                                    cli_args,
-                                    {
-                                        "event": "stable_prefill_progress",
-                                        "request_id": request_id,
-                                        "prompt_tokens": len(prompt),
-                                        "tokens_processed": processed,
-                                        "tokens_total": total,
-                                        "elapsed_ms": elapsed_s * 1_000.0,
-                                    },
-                                )
+                                if (
+                                    checkpoint_cache is not None
+                                    and checkpoint_tokens > 0
+                                    and checkpoint_tokens < len(stable_prompt)
+                                ):
+                                    # Checkpoints are taken while prefill keeps
+                                    # mutating the live KV cache, so store an
+                                    # isolated snapshot for this prefix.
+                                    self.prompt_cache.insert_cache(
+                                        self.model_provider.model_key,
+                                        stable_prompt[:checkpoint_tokens],
+                                        copy.deepcopy(checkpoint_cache),
+                                        cache_type="user",
+                                    )
+                                    sys.stderr.write(
+                                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] "
+                                        f"stable prompt checkpoint: {checkpoint_tokens}/{len(stable_prompt)} cached\n"
+                                    )
+                                    sys.stderr.flush()
                             if stable_event.get("event") == "summary":
                                 stable_summary = stable_event
                                 stable_cache_build_us = float(
@@ -748,6 +815,16 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                     "max_tokens": int(args.max_tokens),
                     "block_tokens": getattr(cli_args, "block_tokens", None),
                     "prefill_step_size": prefill_step_size,
+                    "prompt_cache_checkpoint_tokens": (
+                        _dflash_prompt_cache_checkpoint_tokens(cli_args)
+                    ),
+                    "prompt_cache_target_only_checkpoints": bool(
+                        getattr(
+                            cli_args,
+                            "dflash_target_only_prompt_cache_checkpoints",
+                            False,
+                        )
+                    ),
                     "quantize_kv_cache": bool(
                         getattr(cli_args, "quantize_kv_cache", False)
                     ),
@@ -773,6 +850,16 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                 prompt_cache=prompt_cache,
                 prompt_cache_count=prompt_cache_count,
                 return_prompt_cache=use_dflash_prompt_cache,
+                prompt_cache_checkpoint_tokens=(
+                    _dflash_prompt_cache_checkpoint_tokens(cli_args)
+                ),
+                prompt_cache_target_only_checkpoints=bool(
+                    getattr(
+                        cli_args,
+                        "dflash_target_only_prompt_cache_checkpoints",
+                        False,
+                    )
+                ),
             )
 
             try:
@@ -849,6 +936,35 @@ class DFlashResponseGenerator(mlx_server.ResponseGenerator):
                                     finish_reason = "stop"
                             else:
                                 finish_reason = "stop"
+                        elif event.get("event") == "prompt_cache_checkpoint":
+                            checkpoint_cache = event.get("prompt_cache")
+                            checkpoint_tokens = int(
+                                event.get("tokens_processed", 0) or 0
+                            )
+                            if (
+                                use_dflash_prompt_cache
+                                and checkpoint_cache is not None
+                                and checkpoint_tokens > 0
+                                and checkpoint_tokens < len(prompt)
+                            ):
+                                # The stream keeps mutating its live KV/GDN
+                                # cache after yielding this event, so store an
+                                # isolated snapshot for the prefix.
+                                self.prompt_cache.insert_cache(
+                                    self.model_provider.model_key,
+                                    prompt[:checkpoint_tokens],
+                                    copy.deepcopy(checkpoint_cache),
+                                    cache_type=(
+                                        "user"
+                                        if using_stable_prompt_cache
+                                        else "assistant"
+                                    ),
+                                )
+                                sys.stderr.write(
+                                    f"{time.strftime('%Y-%m-%d %H:%M:%S')} [dflash] "
+                                    f"prompt checkpoint: {checkpoint_tokens}/{len(prompt)} cached\n"
+                                )
+                                sys.stderr.flush()
                         elif event.get("event") == "adaptive_fallback":
                             elapsed_s = (time.perf_counter_ns() - request_start_ns) / 1e9
                             fallback_generated_tokens = int(
@@ -1107,11 +1223,40 @@ def _print_startup_banner(
         draft_suffix = " (explicit)"
     else:
         draft_suffix = " (auto-detected)"
+    middle_raw = os.environ.get("DFLASH_PREFILL_MIDDLE_NO_LOGITS", "1").strip().lower()
+    fastpath_raw = os.environ.get("DFLASH_PREFILL_CACHE_FASTPATH", "").strip().lower()
+    prefill_modes = []
+    if middle_raw not in {"", "0", "false", "no"}:
+        prefill_modes.append("middle no-logits")
+    if fastpath_raw not in {"", "0", "false", "no", "off"}:
+        prefill_modes.append("draft-context fastpath")
+    if getattr(model_provider.cli_args, "hybrid_mlp", False):
+        prefill_modes.append(
+            f"hybrid MLP >= {int(model_provider.cli_args.hybrid_mlp_threshold)} rows"
+        )
+    if getattr(model_provider.cli_args, "hybrid_gdn_qkv_z_out_proj", False):
+        prefill_modes.append(
+            "hybrid GDN in_proj_qkv+in_proj_z+out_proj "
+            f">= {int(model_provider.cli_args.hybrid_gdn_qkv_z_out_proj_threshold)} rows"
+        )
+    elif getattr(model_provider.cli_args, "hybrid_gdn_z_out_proj", False):
+        prefill_modes.append(
+            "hybrid GDN in_proj_z+out_proj "
+            f">= {int(model_provider.cli_args.hybrid_gdn_z_out_proj_threshold)} rows"
+        )
+    elif getattr(model_provider.cli_args, "hybrid_gdn_out_proj", False):
+        prefill_modes.append(
+            "hybrid GDN out_proj "
+            f">= {int(model_provider.cli_args.hybrid_gdn_out_proj_threshold)} rows"
+        )
+    if not prefill_modes:
+        prefill_modes.append("standard")
     raw_lines = [
         f"DFlash v{dflash_version} - speculative decoding engine",
         f"Target: {target_ref}",
         f"Draft:  {draft_ref}{draft_suffix}",
         "Mode:   DFlash (speculative decoding active)",
+        f"Prefill: {', '.join(prefill_modes)}",
         f"Server: {server_name} on port {port}",
     ]
 
@@ -1133,6 +1278,77 @@ def _print_startup_banner(
     lines.append(border)
 
     sys.stderr.write("\n".join(lines) + "\n")
+    sys.stderr.flush()
+
+
+def _macos_low_power_mode_enabled() -> bool:
+    if platform.system() != "Darwin":
+        return False
+    try:
+        result = subprocess.run(
+            ["pmset", "-g", "custom"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except Exception:
+        result = None
+    if result is not None and result.returncode == 0:
+        in_ac_section = False
+        for raw_line in result.stdout.splitlines():
+            line = raw_line.strip()
+            if line == "AC Power:":
+                in_ac_section = True
+                continue
+            if line.endswith("Power:"):
+                in_ac_section = False
+                continue
+            if in_ac_section and line.startswith("powermode"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        # powermode: 0=automatic, 1=low power, 2=high power.
+                        return int(parts[-1]) == 1
+                    except ValueError:
+                        return False
+    try:
+        result = subprocess.run(
+            ["system_profiler", "SPPowerDataType"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+        )
+    except Exception:
+        return False
+    return "Low Power Mode: Yes" in result.stdout
+
+
+def _warn_if_low_power_mode() -> None:
+    if not _macos_low_power_mode_enabled():
+        return
+    sys.stderr.write(
+        "[dflash] warning: macOS Low Power Mode is enabled; prefill/decode "
+        "benchmarks may be GPU clock-capped. Disable with: "
+        "sudo pmset -a lowpowermode 0\n"
+    )
+    sys.stderr.flush()
+
+
+def _warn_if_checkpoint_cache_too_small(cli_args: Any) -> None:
+    if _dflash_prompt_cache_checkpoint_tokens(cli_args) <= 0:
+        return
+    if _dflash_prompt_cache_dir(cli_args) is not None:
+        return
+    prompt_cache_size = int(getattr(cli_args, "prompt_cache_size", 0) or 0)
+    if prompt_cache_size > 1:
+        return
+    sys.stderr.write(
+        "[dflash] warning: prompt-cache checkpoints are enabled, but "
+        "--prompt-cache-size is <= 1 and no --dflash-prompt-cache-dir is set. "
+        "Use a larger memory cache or a disk cache to keep checkpoint prefixes.\n"
+    )
     sys.stderr.flush()
 
 
@@ -1158,10 +1374,15 @@ def _run_with_dflash_server(host: str, port: int, model_provider: DFlashModelPro
                 if model_provider.cli_args.dflash_prompt_cache_max_disk_gb
                 else None
             ),
+            async_writes=not bool(
+                getattr(model_provider.cli_args, "dflash_prompt_cache_sync_writes", False)
+            ),
         )
     response_generator = DFlashResponseGenerator(model_provider, prompt_cache)
     if group.rank() == 0:
         _print_startup_banner(port=port, model_provider=model_provider)
+        _warn_if_low_power_mode()
+        _warn_if_checkpoint_cache_too_small(model_provider.cli_args)
         mlx_server._run_http_server(
             host,
             port,
@@ -1362,6 +1583,129 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum disk prompt-cache size in GB. 0 disables size cleanup.",
     )
     parser.add_argument(
+        "--dflash-prompt-cache-checkpoint-tokens",
+        type=int,
+        default=0,
+        help=(
+            "During stable prefill, save reusable prompt-cache checkpoints about "
+            "every N tokens. 0 disables checkpoints. For an M3 Max long-coding "
+            "chat, 8192 is a conservative starting point; lower values reuse "
+            "more prefixes but spend more memory and first-run cache-write time."
+        ),
+    )
+    parser.add_argument(
+        "--dflash-target-only-prompt-cache-checkpoints",
+        action="store_true",
+        help=(
+            "Save prompt-cache checkpoints with exact target KV/GDN state but "
+            "without persisted draft-context K/V. This is a long-chat prefill "
+            "tuning: branch reuse stays target-correct and cheaper to build, "
+            "while speculative draft acceptance may be lower immediately after "
+            "a mid-checkpoint reuse."
+        ),
+    )
+    parser.add_argument(
+        "--dflash-prompt-cache-sync-writes",
+        action="store_true",
+        help=(
+            "Write disk prompt-cache checkpoints synchronously. By default, "
+            "DFlash overlaps disk persistence on a background CPU thread so "
+            "long prefill/decode is not blocked by cache serialization."
+        ),
+    )
+    parser.add_argument(
+        "--prefill-cache-fastpath",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Build the draft context cache during prefill instead of deferring "
+            "it. On the tuned M3 Max prompt-cache path this measured faster "
+            "for 4k-10k prefill; use --no-prefill-cache-fastpath to force the "
+            "older deferred strategy."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-mlp",
+        action="store_true",
+        help=(
+            "Keep q4 MLP weights for decode/small verify and also load bf16 "
+            "MLP weights for large prefill chunks. This is tuned for large "
+            "unified-memory Macs where measured MLX large-M MLP matmuls favor bf16."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-mlp-threshold",
+        type=int,
+        default=256,
+        help=(
+            "Effective linear row count M=product(x.shape[:-1]) at which "
+            "--hybrid-mlp switches from q4 to bf16 MLP projections. "
+            "Default 256 avoids slower bf16 paths for 128-255 row "
+            "cached-chat suffixes on the measured M3 Max."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-out-proj",
+        action="store_true",
+        help=(
+            "Also keep bf16 GDN out_proj weights for large prefill chunks. "
+            "This is an M3 Max/large-unified-memory tuning; it measured as a "
+            "small prefill win with about 3 GB extra resident target weights."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-out-proj-threshold",
+        type=int,
+        default=256,
+        help=(
+            "Effective linear row count M=product(x.shape[:-1]) at which "
+            "--hybrid-gdn-out-proj switches GDN out_proj from q4 to bf16. "
+            "Default 256 matches the cached-suffix M3 Max tuning."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-z-out-proj",
+        action="store_true",
+        help=(
+            "Also keep bf16 GDN in_proj_z and out_proj weights for large "
+            "prefill chunks. This is the higher-memory M3 Max tuning; it "
+            "measured slightly faster than --hybrid-gdn-out-proj with about "
+            "6 GB extra resident target weights."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-z-out-proj-threshold",
+        type=int,
+        default=256,
+        help=(
+            "Effective linear row count M=product(x.shape[:-1]) at which "
+            "--hybrid-gdn-z-out-proj switches GDN in_proj_z and out_proj "
+            "from q4 to bf16. Default 256 matches the cached-suffix M3 Max "
+            "tuning."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-qkv-z-out-proj",
+        action="store_true",
+        help=(
+            "Also keep bf16 GDN in_proj_qkv, in_proj_z, and out_proj weights "
+            "for large prefill chunks. This is the highest-memory M3 Max "
+            "tuning; it measured slightly faster than --hybrid-gdn-z-out-proj "
+            "with about 11 GB extra resident target weights."
+        ),
+    )
+    parser.add_argument(
+        "--hybrid-gdn-qkv-z-out-proj-threshold",
+        type=int,
+        default=256,
+        help=(
+            "Effective linear row count M=product(x.shape[:-1]) at which "
+            "--hybrid-gdn-qkv-z-out-proj switches GDN in_proj_qkv, "
+            "in_proj_z, and out_proj from q4 to bf16. Default 256 matches "
+            "the cached-suffix M3 Max tuning."
+        ),
+    )
+    parser.add_argument(
         "--dflash-metrics-log",
         type=str,
         default=None,
@@ -1396,6 +1740,38 @@ def main() -> None:
         if args.dflash_max_ctx <= 0:
             raise SystemExit("--dflash-max-ctx must be > 0")
         os.environ["DFLASH_MAX_CTX"] = str(args.dflash_max_ctx)
+    _apply_prefill_cache_strategy_args(args)
+    if args.hybrid_mlp:
+        if args.hybrid_mlp_threshold <= 0:
+            raise SystemExit("--hybrid-mlp-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_MLP"] = "1"
+        os.environ["DFLASH_HYBRID_MLP_THRESHOLD"] = str(args.hybrid_mlp_threshold)
+    if args.hybrid_gdn_out_proj:
+        if args.hybrid_gdn_out_proj_threshold <= 0:
+            raise SystemExit("--hybrid-gdn-out-proj-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_GDN_LINEAR"] = "1"
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_THRESHOLD"] = str(
+            args.hybrid_gdn_out_proj_threshold
+        )
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_ATTRS"] = "out_proj"
+    if args.hybrid_gdn_z_out_proj:
+        if args.hybrid_gdn_z_out_proj_threshold <= 0:
+            raise SystemExit("--hybrid-gdn-z-out-proj-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_GDN_LINEAR"] = "1"
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_THRESHOLD"] = str(
+            args.hybrid_gdn_z_out_proj_threshold
+        )
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_ATTRS"] = "in_proj_z,out_proj"
+    if args.hybrid_gdn_qkv_z_out_proj:
+        if args.hybrid_gdn_qkv_z_out_proj_threshold <= 0:
+            raise SystemExit("--hybrid-gdn-qkv-z-out-proj-threshold must be > 0")
+        os.environ["DFLASH_HYBRID_GDN_LINEAR"] = "1"
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_THRESHOLD"] = str(
+            args.hybrid_gdn_qkv_z_out_proj_threshold
+        )
+        os.environ["DFLASH_HYBRID_GDN_LINEAR_ATTRS"] = (
+            "in_proj_qkv,in_proj_z,out_proj"
+        )
     _stabilize_dflash_prompt_cache_chat_template_args(args)
 
     configure_mlx_memory_limits()

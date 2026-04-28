@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import mlx.core as mx
@@ -20,10 +21,13 @@ from dflash_mlx.recurrent_rollback_cache import RecurrentRollbackCache
 from dflash_mlx.runtime import (
     _combined_dflash_prompt_cache,
     _context_cache_offset,
+    _context_segments_after_offset,
     _finalize_draft_context_cache,
     _iter_uncached_prefill_chunks,
+    _materialize_projected_draft_context,
     _require_non_empty_prompt_tokens,
     _split_dflash_prompt_cache,
+    _target_only_dflash_prompt_cache,
     extract_context_feature_range_from_dict,
     make_target_cache,
     target_prefill_without_logits,
@@ -31,6 +35,7 @@ from dflash_mlx.runtime import (
 )
 from dflash_mlx.serve import (
     _append_dflash_metrics_event,
+    _apply_prefill_cache_strategy_args,
     _build_dflash_metrics_record,
     _dflash_server_prompt_cache_enabled,
     _fetch_dflash_prompt_cache,
@@ -73,6 +78,30 @@ def test_split_and_combine_dflash_prompt_cache_preserves_layout():
 
     assert split_target == target_cache
     assert split_draft == draft_cache
+
+
+def test_target_only_dflash_prompt_cache_preserves_draft_offsets_without_arrays():
+    target_cache = ["target0", "target1"]
+    draft_cache = [ContextOnlyDraftKVCache(sink_size=8, window_size=32)]
+    draft_cache[0].append_context(
+        mx.ones((1, 1, 4, 2)),
+        mx.ones((1, 1, 4, 2)),
+        4,
+    )
+
+    combined = _target_only_dflash_prompt_cache(
+        target_cache,
+        draft_cache,
+        context_len=128,
+    )
+
+    assert combined[:2] == target_cache
+    empty_draft = combined[2]
+    assert isinstance(empty_draft, ContextOnlyDraftKVCache)
+    assert empty_draft.offset == 128
+    assert empty_draft.sink_size == 8
+    assert empty_draft.window_size == 32
+    assert empty_draft.empty()
 
 
 def test_split_dflash_prompt_cache_rejects_missing_target_layers():
@@ -210,6 +239,48 @@ class _RecordingDraft:
         )
 
 
+def test_context_segments_after_offset_trims_already_cached_prefix():
+    segment = mx.arange(10, dtype=mx.float32).reshape(1, 5, 2)
+
+    trimmed = _context_segments_after_offset(
+        [
+            (mx.ones((1, 2, 2), dtype=mx.float32), 0),
+            (segment, 2),
+        ],
+        current_offset=4,
+    )
+
+    assert len(trimmed) == 1
+    trimmed_segment, offset = trimmed[0]
+    assert offset == 4
+    assert trimmed_segment.shape == (1, 3, 2)
+    assert mx.array_equal(trimmed_segment, segment[:, 2:, :]).item()
+
+
+def test_materialize_projected_draft_context_filters_empty_segments():
+    draft = _RecordingDraft()
+    non_empty = mx.arange(4, dtype=mx.float32).reshape(1, 2, 2)
+
+    _materialize_projected_draft_context(
+        draft_model=draft,
+        draft_cache=[],
+        projected_hidden_segments=[
+            (mx.zeros((1, 0, 2), dtype=mx.float32), 0),
+            (non_empty, 4),
+        ],
+        total_context_len=6,
+    )
+
+    assert len(draft.calls) == 1
+    call = draft.calls[0]
+    assert call["total_context_len"] == 6
+    assert call["cache"] == []
+    assert len(call["segments"]) == 1
+    segment, offset = call["segments"][0]
+    assert offset == 4
+    assert mx.array_equal(segment, non_empty).item()
+
+
 def test_finalize_draft_context_cache_appends_only_missing_tail():
     draft = _RecordingDraft()
     cache = ContextOnlyDraftKVCache()
@@ -325,6 +396,34 @@ def test_disk_backed_prompt_cache_reuses_longest_saved_prefix(tmp_path):
     assert reader_memory.inserts[-1][3] == "user"
 
 
+def test_disk_backed_prompt_cache_async_write_round_trips(tmp_path):
+    model_key = ("target", None, "draft")
+    keys = mx.ones((1, 1, 2, 2), dtype=mx.float16)
+    values = mx.zeros((1, 1, 2, 2), dtype=mx.float16)
+    cache = ContextOnlyDraftKVCache()
+    cache.set_context(keys, values, offset=3)
+
+    writer = DiskBackedPromptCache(
+        _RecordingPromptCacheStore(),
+        directory=tmp_path,
+        ttl_seconds=60,
+        async_writes=True,
+    )
+    writer.insert_cache(model_key, [1, 2, 3], [cache], cache_type="user")
+    writer.wait_for_pending_writes()
+
+    reader = DiskBackedPromptCache(
+        _RecordingPromptCacheStore(),
+        directory=tmp_path,
+        ttl_seconds=60,
+    )
+    prompt_cache, rest = reader.fetch_nearest_cache(model_key, [1, 2, 3, 4])
+
+    assert rest == [4]
+    assert prompt_cache is not None
+    assert mx.array_equal(prompt_cache[0].keys, keys).item()
+
+
 def test_disk_backed_prompt_cache_deletes_stale_entries(tmp_path):
     model_key = ("target", None, "draft")
     cache = ContextOnlyDraftKVCache()
@@ -429,6 +528,11 @@ def test_serve_single_builds_stable_prompt_cache_before_tail(monkeypatch):
         calls.append(kwargs)
         if kwargs["max_new_tokens"] == 0:
             yield {
+                "event": "prompt_cache_checkpoint",
+                "tokens_processed": 2,
+                "prompt_cache": [["checkpoint-cache"]],
+            }
+            yield {
                 "event": "summary",
                 "prompt_cache": ["stable-cache"],
                 "generated_token_ids": [],
@@ -437,6 +541,11 @@ def test_serve_single_builds_stable_prompt_cache_before_tail(monkeypatch):
                 "phase_timings_us": {"prefill": 1.0},
             }
             return
+        yield {
+            "event": "prompt_cache_checkpoint",
+            "tokens_processed": 5,
+            "prompt_cache": ["main-checkpoint-cache"],
+        }
         yield {
             "event": "summary",
             "prompt_cache": ["mutated-main-cache"],
@@ -481,6 +590,7 @@ def test_serve_single_builds_stable_prompt_cache_before_tail(monkeypatch):
             quantize_kv_cache=False,
             prefill_step_size=2048,
             block_tokens=None,
+            dflash_prompt_cache_checkpoint_tokens=2,
         ),
     )
     response_generator.prompt_cache = _RecordingPromptCacheStore()
@@ -501,12 +611,20 @@ def test_serve_single_builds_stable_prompt_cache_before_tail(monkeypatch):
     assert calls[0]["max_new_tokens"] == 0
     assert calls[0]["prompt_tokens_override"] == [1, 2, 3, 4]
     assert calls[0]["return_prompt_cache"]
+    assert calls[0]["prompt_cache_checkpoint_tokens"] == 2
     assert calls[1]["prompt_tokens_override"] == [5, 6]
     assert calls[1]["prompt_cache"] == ["stable-cache"]
     assert calls[1]["prompt_cache_count"] == 4
     assert calls[1]["return_prompt_cache"]
     assert response_generator.prompt_cache.inserts == [
+        (("target", None, "draft"), [1, 2], [["checkpoint-cache"]], "user"),
         (("target", None, "draft"), [1, 2, 3, 4], ["stable-cache"], "user"),
+        (
+            ("target", None, "draft"),
+            [1, 2, 3, 4, 5],
+            ["main-checkpoint-cache"],
+            "user",
+        ),
         (
             ("target", None, "draft"),
             [1, 2, 3, 4, 5, 6, 9],
@@ -580,6 +698,31 @@ def test_dflash_prompt_cache_respects_explicit_preserve_thinking(monkeypatch):
         "enable_thinking": False,
         "preserve_thinking": False,
     }
+
+
+def test_prefill_cache_fastpath_cli_sets_opposite_strategy_env(monkeypatch):
+    monkeypatch.delenv("DFLASH_PREFILL_CACHE_FASTPATH", raising=False)
+    monkeypatch.delenv("DFLASH_PREFILL_DEFER_DRAFT_CONTEXT", raising=False)
+
+    _apply_prefill_cache_strategy_args(SimpleNamespace(prefill_cache_fastpath=True))
+
+    assert os.environ["DFLASH_PREFILL_CACHE_FASTPATH"] == "1"
+    assert os.environ["DFLASH_PREFILL_DEFER_DRAFT_CONTEXT"] == "0"
+
+    _apply_prefill_cache_strategy_args(SimpleNamespace(prefill_cache_fastpath=False))
+
+    assert os.environ["DFLASH_PREFILL_CACHE_FASTPATH"] == "0"
+    assert os.environ["DFLASH_PREFILL_DEFER_DRAFT_CONTEXT"] == "1"
+
+
+def test_prefill_cache_strategy_cli_default_preserves_env(monkeypatch):
+    monkeypatch.setenv("DFLASH_PREFILL_CACHE_FASTPATH", "custom")
+    monkeypatch.setenv("DFLASH_PREFILL_DEFER_DRAFT_CONTEXT", "custom")
+
+    _apply_prefill_cache_strategy_args(SimpleNamespace(prefill_cache_fastpath=None))
+
+    assert os.environ["DFLASH_PREFILL_CACHE_FASTPATH"] == "custom"
+    assert os.environ["DFLASH_PREFILL_DEFER_DRAFT_CONTEXT"] == "custom"
 
 
 def test_state_machine_terminal_detection_handles_stopped_state():
@@ -711,6 +854,85 @@ class _FakeTarget:
         )
 
 
+class _CountingNorm:
+    def __call__(self, hidden_states):
+        return hidden_states
+
+
+class _CountingAttention:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, hidden_states, mask=None, cache=None):
+        del mask, cache
+        self.calls += 1
+        return hidden_states + 10
+
+
+class _CacheOnlyAttention(_CountingAttention):
+    num_key_value_heads = 1
+
+    def k_proj(self, hidden_states):
+        return hidden_states
+
+    def v_proj(self, hidden_states):
+        return hidden_states
+
+    def k_norm(self, hidden_states):
+        return hidden_states
+
+    def rope(self, keys, offset=0):
+        del offset
+        return keys
+
+
+class _RecordingKVCache:
+    def __init__(self):
+        self.keys = None
+        self.values = None
+        self.offset = 0
+
+    def update_and_fetch(self, keys, values):
+        self.keys = keys
+        self.values = values
+        self.offset += int(keys.shape[2])
+        return keys, values
+
+
+class _CountingMLP:
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, hidden_states):
+        self.calls += 1
+        return hidden_states + 100
+
+
+class _StructuredLayer:
+    is_linear = False
+
+    def __init__(self):
+        self.input_layernorm = _CountingNorm()
+        self.post_attention_layernorm = _CountingNorm()
+        self.self_attn = _CountingAttention()
+        self.mlp = _CountingMLP()
+
+    def __call__(self, hidden_states, mask=None, cache=None):
+        r = self.self_attn(self.input_layernorm(hidden_states), mask, cache)
+        h = hidden_states + r
+        return h + self.mlp(self.post_attention_layernorm(h))
+
+
+class _StructuredTarget:
+    def __init__(self, n_layers: int):
+        self.model = SimpleNamespace(
+            embed_tokens=_FakeEmbed(),
+            layers=[_StructuredLayer() for _ in range(n_layers)],
+            fa_idx=0,
+            ssm_idx=0,
+        )
+
+
 def test_target_forward_can_project_only_final_prefill_token_logits():
     target = _FakeTarget()
     input_ids = mx.array([[1, 2, 3, 4]], dtype=mx.uint32)
@@ -755,6 +977,140 @@ def test_target_prefill_without_logits_skips_lm_head_projection():
 
     assert hidden.shape == (1, 3, 3)
     assert target.lm_head.input_shapes == []
+
+
+def test_target_prefill_without_logits_can_skip_final_layer_mlp_only():
+    target = _StructuredTarget(n_layers=2)
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    hidden = target_prefill_without_logits(
+        target,
+        input_ids=input_ids,
+        cache=[None, None],
+        skip_final_layer_mlp=True,
+    )
+
+    assert hidden.shape == (1, 3, 3)
+    assert target.model.layers[0].self_attn.calls == 1
+    assert target.model.layers[0].mlp.calls == 1
+    assert target.model.layers[1].self_attn.calls == 1
+    assert target.model.layers[1].mlp.calls == 0
+
+
+def test_target_prefill_without_logits_can_update_final_attention_cache_only():
+    target = _StructuredTarget(n_layers=2)
+    target.model.layers[1].self_attn = _CacheOnlyAttention()
+    final_cache = _RecordingKVCache()
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    hidden = target_prefill_without_logits(
+        target,
+        input_ids=input_ids,
+        cache=[None, final_cache],
+        skip_final_layer_attention=True,
+    )
+    mx.eval(hidden, final_cache.keys, final_cache.values)
+
+    assert hidden.shape == (1, 3, 3)
+    assert target.model.layers[0].self_attn.calls == 1
+    assert target.model.layers[0].mlp.calls == 1
+    assert target.model.layers[1].self_attn.calls == 0
+    assert target.model.layers[1].mlp.calls == 0
+    assert final_cache.offset == 3
+    assert final_cache.keys.shape == (1, 1, 3, 3)
+    assert final_cache.values.shape == (1, 1, 3, 3)
+
+
+def test_target_prefill_without_logits_can_return_cache_dependencies_directly():
+    target = _StructuredTarget(n_layers=2)
+    target.model.layers[1].self_attn = _CacheOnlyAttention()
+    final_cache = _RecordingKVCache()
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    hidden, dependencies = target_prefill_without_logits(
+        target,
+        input_ids=input_ids,
+        cache=[None, final_cache],
+        skip_final_layer_attention=True,
+        return_dependencies=True,
+    )
+    mx.eval(hidden, *dependencies)
+
+    assert hidden.shape == (1, 3, 3)
+    assert len(dependencies) == 2
+    assert target.model.layers[1].self_attn.calls == 0
+    assert target.model.layers[1].mlp.calls == 0
+    assert final_cache.offset == 3
+    assert mx.array_equal(dependencies[0], final_cache.keys).item()
+    assert mx.array_equal(dependencies[1], final_cache.values).item()
+
+
+def test_target_prefill_without_logits_dependency_mode_falls_back_without_cache():
+    target = _StructuredTarget(n_layers=2)
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    hidden, dependencies = target_prefill_without_logits(
+        target,
+        input_ids=input_ids,
+        cache=[None, None],
+        skip_final_layer_attention=True,
+        return_dependencies=True,
+    )
+
+    assert hidden.shape == (1, 3, 3)
+    assert dependencies == []
+    assert target.model.layers[1].self_attn.calls == 1
+    assert target.model.layers[1].mlp.calls == 1
+
+
+def test_target_forward_with_hidden_states_can_skip_uncaptured_final_mlp():
+    target = _StructuredTarget(n_layers=2)
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    logits, captured = target_forward_with_hidden_states(
+        target,
+        input_ids=input_ids,
+        cache=[None, None],
+        capture_layer_ids={1},
+        skip_logits=True,
+        skip_final_layer_mlp=True,
+    )
+
+    assert logits is None
+    assert captured[1].shape == (1, 3, 3)
+    assert target.model.layers[0].self_attn.calls == 1
+    assert target.model.layers[0].mlp.calls == 1
+    assert target.model.layers[1].self_attn.calls == 1
+    assert target.model.layers[1].mlp.calls == 0
+
+
+def test_target_forward_with_hidden_states_can_update_uncaptured_final_attention_cache_only():
+    target = _StructuredTarget(n_layers=2)
+    target.model.layers[1].self_attn = _CacheOnlyAttention()
+    final_cache = _RecordingKVCache()
+    input_ids = mx.array([[1, 2, 3]], dtype=mx.uint32)
+
+    logits, captured = target_forward_with_hidden_states(
+        target,
+        input_ids=input_ids,
+        cache=[None, final_cache],
+        capture_layer_ids={1},
+        skip_logits=True,
+        skip_final_layer_attention=True,
+    )
+    mx.eval(captured[1], *captured[-1])
+
+    assert logits is None
+    assert captured[1].shape == (1, 3, 3)
+    assert -1 in captured
+    assert len(captured[-1]) == 2
+    assert target.model.layers[0].self_attn.calls == 1
+    assert target.model.layers[0].mlp.calls == 1
+    assert target.model.layers[1].self_attn.calls == 0
+    assert target.model.layers[1].mlp.calls == 0
+    assert final_cache.offset == 3
+    assert final_cache.keys.shape == (1, 1, 3, 3)
+    assert final_cache.values.shape == (1, 1, 3, 3)
 
 
 def test_stream_cache_only_prefill_skips_final_lm_head_projection(monkeypatch):

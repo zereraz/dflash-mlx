@@ -29,11 +29,14 @@ _PROJ_TAGS = {
     "mlp.up_proj":          "mlp_up",
     "mlp.down_proj":        "mlp_down",
     "self_attn.q_proj":     "attn_q",
+    "self_attn.kv_proj":    "attn_kv",
     "self_attn.k_proj":     "attn_k",
     "self_attn.v_proj":     "attn_v",
     "self_attn.o_proj":     "attn_o",
     "linear_attn.in_proj_qkv": "gdn_qkv",
+    "linear_attn.in_proj_qkvz": "gdn_qkvz",
     "linear_attn.in_proj_z":   "gdn_z",
+    "linear_attn.in_proj_ba":  "gdn_ba",
     "linear_attn.out_proj":    "gdn_o",
 }
 
@@ -68,9 +71,9 @@ def is_verify_eligible(ql: nn.QuantizedLinear, path: str = "") -> bool:
         if "mlp" in allowed:
             allowed.update({"mlp_gate", "mlp_gate_up", "mlp_up", "mlp_down"})
         if "attn" in allowed:
-            allowed.update({"attn_q", "attn_k", "attn_v", "attn_o"})
+            allowed.update({"attn_q", "attn_kv", "attn_k", "attn_v", "attn_o"})
         if "gdn" in allowed:
-            allowed.update({"gdn_qkv", "gdn_z", "gdn_o"})
+            allowed.update({"gdn_qkv", "gdn_qkvz", "gdn_z", "gdn_ba", "gdn_o"})
         if tag not in allowed:
             return False
     return True

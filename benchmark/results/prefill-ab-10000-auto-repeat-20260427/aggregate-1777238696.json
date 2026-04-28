@@ -1,0 +1,73 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "scenarios": "auto_b16",
+  "threshold": 256,
+  "pairs": 3,
+  "order": [
+    "q4",
+    "hybrid"
+  ],
+  "trials": [
+    {
+      "variant": "q4",
+      "pair": 1,
+      "prefill_ms": 51145.333332999995,
+      "wall_s": 54.835191084071994,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/q4-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 47917.711625,
+      "wall_s": 52.71583712473512,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/hybrid-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "q4",
+      "pair": 2,
+      "prefill_ms": 52675.109833999995,
+      "wall_s": 56.667891832999885,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/q4-p10000-s2048-pair2.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 2,
+      "prefill_ms": 45540.51025,
+      "wall_s": 50.599066958297044,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/hybrid-p10000-s2048-pair2.json"
+    },
+    {
+      "variant": "q4",
+      "pair": 3,
+      "prefill_ms": 48855.2995,
+      "wall_s": 52.592159915715456,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/q4-p10000-s2048-pair3.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 3,
+      "prefill_ms": 45823.430667,
+      "wall_s": 50.64447404118255,
+      "output": "benchmark/results/prefill-ab-10000-auto-repeat-20260427/hybrid-p10000-s2048-pair3.json"
+    }
+  ],
+  "summary": {
+    "q4": {
+      "count": 3.0,
+      "best_ms": 48855.2995,
+      "median_ms": 51145.333332999995,
+      "mean_ms": 50891.914222333326
+    },
+    "hybrid": {
+      "count": 3.0,
+      "best_ms": 45540.51025,
+      "median_ms": 45823.430667,
+      "mean_ms": 46427.217513999996
+    }
+  },
+  "hybrid_vs_q4_median_speedup": 1.1161393328377003,
+  "hybrid_vs_q4_median_delta_ms": 5321.9026659999945
+}

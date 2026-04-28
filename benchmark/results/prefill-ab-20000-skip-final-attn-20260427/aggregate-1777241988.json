@@ -1,0 +1,45 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 20000,
+  "prefill_step_size": 2048,
+  "scenarios": "auto_b16",
+  "threshold": 256,
+  "pairs": 1,
+  "order": [
+    "hybrid_gdn_out",
+    "hybrid_gdn_out_skip_final_attn"
+  ],
+  "trials": [
+    {
+      "variant": "hybrid_gdn_out",
+      "pair": 1,
+      "prefill_ms": 90611.60483400001,
+      "wall_s": 100.96292937500402,
+      "output": "benchmark/results/prefill-ab-20000-skip-final-attn-20260427/hybrid_gdn_out-p20000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_gdn_out_skip_final_attn",
+      "pair": 1,
+      "prefill_ms": 89233.604959,
+      "wall_s": 100.40817033313215,
+      "output": "benchmark/results/prefill-ab-20000-skip-final-attn-20260427/hybrid_gdn_out_skip_final_attn-p20000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "hybrid_gdn_out": {
+      "count": 1.0,
+      "best_ms": 90611.60483400001,
+      "median_ms": 90611.60483400001,
+      "mean_ms": 90611.60483400001
+    },
+    "hybrid_gdn_out_skip_final_attn": {
+      "count": 1.0,
+      "best_ms": 89233.604959,
+      "median_ms": 89233.604959,
+      "mean_ms": 89233.604959
+    }
+  },
+  "skip_final_attn_vs_hybrid_gdn_out_median_speedup": 1.0154426112856603,
+  "skip_final_attn_vs_hybrid_gdn_out_median_delta_ms": 1377.9998750000086
+}

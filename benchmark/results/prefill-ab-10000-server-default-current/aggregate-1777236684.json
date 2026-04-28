@@ -1,0 +1,58 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "threshold": 256,
+  "pairs": 2,
+  "order": [
+    "q4",
+    "hybrid"
+  ],
+  "trials": [
+    {
+      "variant": "q4",
+      "pair": 1,
+      "prefill_ms": 48287.317208,
+      "wall_s": 51.92058387491852,
+      "output": "benchmark/results/prefill-ab-10000-server-default-current/q4-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 1,
+      "prefill_ms": 45344.762582999996,
+      "wall_s": 50.063274417072535,
+      "output": "benchmark/results/prefill-ab-10000-server-default-current/hybrid-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "q4",
+      "pair": 2,
+      "prefill_ms": 51163.128207999995,
+      "wall_s": 54.95858816569671,
+      "output": "benchmark/results/prefill-ab-10000-server-default-current/q4-p10000-s2048-pair2.json"
+    },
+    {
+      "variant": "hybrid",
+      "pair": 2,
+      "prefill_ms": 45741.933625,
+      "wall_s": 50.67438916582614,
+      "output": "benchmark/results/prefill-ab-10000-server-default-current/hybrid-p10000-s2048-pair2.json"
+    }
+  ],
+  "summary": {
+    "q4": {
+      "count": 2.0,
+      "best_ms": 48287.317208,
+      "median_ms": 49725.222708,
+      "mean_ms": 49725.222708
+    },
+    "hybrid": {
+      "count": 2.0,
+      "best_ms": 45344.762582999996,
+      "median_ms": 45543.348104,
+      "mean_ms": 45543.348104
+    }
+  },
+  "hybrid_vs_q4_median_speedup": 1.0918218527643275,
+  "hybrid_vs_q4_median_delta_ms": 4181.874604000004
+}

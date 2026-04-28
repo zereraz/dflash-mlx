@@ -1,0 +1,48 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_file": null,
+  "prompt_tokens": 30000,
+  "prefill_step_size": 2048,
+  "scenarios": "fastpath_b16",
+  "threshold": null,
+  "mlp_threshold": 256,
+  "gdn_threshold": 256,
+  "pairs": 1,
+  "order": [
+    "q4",
+    "hybrid_gdn_qkv_z_out"
+  ],
+  "trials": [
+    {
+      "variant": "q4",
+      "pair": 1,
+      "prefill_ms": 152995.657333,
+      "wall_s": 171.5401569996029,
+      "output": "benchmark/results/prefill-ab-30000-current-after-cleanups-20260427/q4-p30000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_gdn_qkv_z_out",
+      "pair": 1,
+      "prefill_ms": 136278.25283399998,
+      "wall_s": 156.20276104100049,
+      "output": "benchmark/results/prefill-ab-30000-current-after-cleanups-20260427/hybrid_gdn_qkv_z_out-p30000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "q4": {
+      "count": 1.0,
+      "best_ms": 152995.657333,
+      "median_ms": 152995.657333,
+      "mean_ms": 152995.657333
+    },
+    "hybrid_gdn_qkv_z_out": {
+      "count": 1.0,
+      "best_ms": 136278.25283399998,
+      "median_ms": 136278.25283399998,
+      "mean_ms": 136278.25283399998
+    }
+  },
+  "hybrid_gdn_qkv_z_out_vs_q4_median_speedup": 1.122671109669739,
+  "hybrid_gdn_qkv_z_out_vs_q4_median_delta_ms": 16717.404499000026
+}

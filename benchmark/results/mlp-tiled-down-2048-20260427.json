@@ -1,0 +1,89 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "layer": 0,
+  "m_values": [
+    2048
+  ],
+  "tile_sizes": [
+    2048,
+    4352,
+    8704,
+    17408
+  ],
+  "repeats": 3,
+  "warmup": 1,
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "target_meta": {
+    "resolved_model_ref": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+    "quantize_kv_cache": false,
+    "kv_cache_bits": 8,
+    "kv_cache_group_size": 64,
+    "target_family": "hybrid_gdn"
+  },
+  "bf16_weight_nbytes": 534773760,
+  "rows": {
+    "2048": {
+      "baseline": {
+        "best_ms": 85.39925,
+        "median_ms": 85.528084,
+        "samples_ms": [
+          85.39925,
+          85.6825,
+          85.528084
+        ]
+      },
+      "tiles": {
+        "2048": {
+          "best_ms": 85.965625,
+          "median_ms": 86.007833,
+          "samples_ms": [
+            86.007833,
+            85.965625,
+            86.73
+          ],
+          "max_abs_diff": 1.0,
+          "baseline_best_speedup": 0.993411610745574
+        },
+        "4352": {
+          "best_ms": 85.004125,
+          "median_ms": 85.081834,
+          "samples_ms": [
+            85.086875,
+            85.004125,
+            85.081834
+          ],
+          "max_abs_diff": 1.0,
+          "baseline_best_speedup": 1.004648303832314
+        },
+        "8704": {
+          "best_ms": 85.471333,
+          "median_ms": 85.555208,
+          "samples_ms": [
+            85.471333,
+            85.555208,
+            85.6555
+          ],
+          "max_abs_diff": 1.0,
+          "baseline_best_speedup": 0.9991566412097491
+        },
+        "17408": {
+          "best_ms": 84.693375,
+          "median_ms": 85.515125,
+          "samples_ms": [
+            85.803625,
+            84.693375,
+            85.515125
+          ],
+          "max_abs_diff": 0.0,
+          "baseline_best_speedup": 1.0083344771654217
+        }
+      }
+    }
+  }
+}

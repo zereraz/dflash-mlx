@@ -1,0 +1,115 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "layer": 0,
+  "m_values": [
+    512,
+    1024,
+    2048
+  ],
+  "tile_sizes": [
+    17408
+  ],
+  "repeats": 5,
+  "warmup": 2,
+  "memory_config": {
+    "metal": true,
+    "wired_limit": 115448725504,
+    "cache_fraction": 0.25,
+    "device_name": "Apple M3 Max",
+    "architecture": "applegpu_g15s"
+  },
+  "target_meta": {
+    "resolved_model_ref": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+    "quantize_kv_cache": false,
+    "kv_cache_bits": 8,
+    "kv_cache_group_size": 64,
+    "target_family": "hybrid_gdn"
+  },
+  "bf16_weight_nbytes": 534773760,
+  "rows": {
+    "512": {
+      "baseline": {
+        "best_ms": 21.647375,
+        "median_ms": 21.652,
+        "samples_ms": [
+          21.647375,
+          21.652,
+          21.677791,
+          21.651625,
+          21.686167
+        ]
+      },
+      "tiles": {
+        "17408": {
+          "best_ms": 21.665917,
+          "median_ms": 21.698208,
+          "samples_ms": [
+            21.702292,
+            22.46025,
+            21.698208,
+            21.681916,
+            21.665917
+          ],
+          "max_abs_diff": 0.0,
+          "baseline_best_speedup": 0.9991441857734431
+        }
+      }
+    },
+    "1024": {
+      "baseline": {
+        "best_ms": 42.621792,
+        "median_ms": 42.763916,
+        "samples_ms": [
+          42.763916,
+          42.659959,
+          43.434708,
+          43.496875,
+          42.621792
+        ]
+      },
+      "tiles": {
+        "17408": {
+          "best_ms": 42.618167,
+          "median_ms": 42.6755,
+          "samples_ms": [
+            43.459875,
+            42.6755,
+            42.70425,
+            42.669333,
+            42.618167
+          ],
+          "max_abs_diff": 0.0,
+          "baseline_best_speedup": 1.0000850576234308
+        }
+      }
+    },
+    "2048": {
+      "baseline": {
+        "best_ms": 84.701833,
+        "median_ms": 85.396667,
+        "samples_ms": [
+          85.498375,
+          85.407667,
+          84.727083,
+          84.701833,
+          85.396667
+        ]
+      },
+      "tiles": {
+        "17408": {
+          "best_ms": 84.642,
+          "median_ms": 85.509875,
+          "samples_ms": [
+            84.690792,
+            85.777375,
+            84.642,
+            85.509875,
+            85.511834
+          ],
+          "max_abs_diff": 0.0,
+          "baseline_best_speedup": 1.0007068949221427
+        }
+      }
+    }
+  }
+}

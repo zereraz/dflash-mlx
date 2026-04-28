@@ -1,0 +1,169 @@
+{
+  "metadata": {
+    "created_at_s": 1777212943.742697,
+    "device": {
+      "metal": true,
+      "device_name": "Apple M3 Max",
+      "max_recommended_working_set_size": 115448725504,
+      "memory_size": 137438953472,
+      "architecture": "applegpu_g15s",
+      "max_buffer_length": 86586540032,
+      "resource_limit": 499000
+    },
+    "mlx_memory_config": {
+      "metal": true,
+      "wired_limit": 115448725504,
+      "cache_fraction": 0.25,
+      "device_name": "Apple M3 Max",
+      "architecture": "applegpu_g15s"
+    },
+    "env": {
+      "DFLASH_COMPILE_PACKED_MLP": "1",
+      "DFLASH_PACK_ATTENTION_KV": "0",
+      "DFLASH_PACK_GDN_INPUTS": "0",
+      "DFLASH_PACK_MLP_GATE_UP": "1",
+      "DFLASH_VERIFY_LINEAR": "0"
+    }
+  },
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 1000,
+  "max_tokens": 0,
+  "prefill_step_size": 1000,
+  "prefill_step_sizes": [
+    1000
+  ],
+  "quantize_kv_cache": false,
+  "kv_cache_bits": 8,
+  "kv_cache_group_size": 64,
+  "return_prompt_cache": true,
+  "reuse_suffix_tokens": 0,
+  "profile": false,
+  "metal_capture": null,
+  "max_seconds": 240.0,
+  "stopped_by_budget": false,
+  "rows": [
+    {
+      "name": "auto_b16",
+      "run": 1,
+      "block_tokens": 16,
+      "prefill_step_size": 1000,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 1000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 4721.865457999999,
+      "prefill_ms": 4673.075292,
+      "draft_ms": 48.781875,
+      "draft_prefill_ms": 48.781875,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [],
+      "run_wall_ms": 4725.039250217378,
+      "mlx_memory_before": {
+        "active_gb": 8e-09,
+        "cache_gb": 1.0564e-05,
+        "peak_gb": 1.0572e-05
+      },
+      "mlx_memory_after": {
+        "active_gb": 16.282297188,
+        "cache_gb": 0.051204002,
+        "peak_gb": 16.724133416
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    },
+    {
+      "name": "auto_b16",
+      "run": 2,
+      "block_tokens": 16,
+      "prefill_step_size": 1000,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 1000,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 4535.974584,
+      "prefill_ms": 4505.887959,
+      "draft_ms": 30.081375,
+      "draft_prefill_ms": 30.081375,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [],
+      "run_wall_ms": 4537.518042139709,
+      "mlx_memory_before": {
+        "active_gb": 16.282297188,
+        "cache_gb": 0.0,
+        "peak_gb": 16.724133416
+      },
+      "mlx_memory_after": {
+        "active_gb": 16.282297188,
+        "cache_gb": 1.258327996,
+        "peak_gb": 18.394567314
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    }
+  ]
+}

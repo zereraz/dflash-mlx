@@ -1,0 +1,108 @@
+{
+  "metadata": {
+    "created_at_s": 1777218726.60733,
+    "device": {
+      "metal": true,
+      "device_name": "Apple M3 Max",
+      "max_recommended_working_set_size": 115448725504,
+      "memory_size": 137438953472,
+      "architecture": "applegpu_g15s",
+      "max_buffer_length": 86586540032,
+      "resource_limit": 499000
+    },
+    "mlx_memory_config": {
+      "metal": true,
+      "wired_limit": 115448725504,
+      "cache_fraction": 0.25,
+      "device_name": "Apple M3 Max",
+      "architecture": "applegpu_g15s"
+    },
+    "env": {
+      "DFLASH_VERIFY_QMM": "1"
+    }
+  },
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_tokens": 4096,
+  "max_tokens": 0,
+  "prefill_step_size": 2048,
+  "prefill_step_sizes": [
+    2048
+  ],
+  "quantize_kv_cache": false,
+  "kv_cache_bits": 8,
+  "kv_cache_group_size": 64,
+  "return_prompt_cache": true,
+  "prompt_cache_checkpoint_tokens": 0,
+  "reuse_suffix_tokens": 0,
+  "profile": false,
+  "metal_capture": null,
+  "max_seconds": 120.0,
+  "stopped_by_budget": false,
+  "rows": [
+    {
+      "name": "auto_b16",
+      "run": 1,
+      "block_tokens": 16,
+      "prefill_step_size": 2048,
+      "quantize_kv_cache": false,
+      "kv_cache_bits": 8,
+      "kv_cache_group_size": 64,
+      "prompt_tokens": 4096,
+      "generation_tokens": 0,
+      "cache_only_prefill": true,
+      "returned_prompt_cache": true,
+      "elapsed_ms": 19803.534793000003,
+      "prefill_ms": 19740.220375,
+      "draft_ms": 63.288083,
+      "draft_prefill_ms": 63.288083,
+      "verify_ms": 0.0,
+      "replay_ms": 0.0,
+      "commit_ms": 0.0,
+      "decode_tps": 0.0,
+      "acceptance_ratio": 0.0,
+      "draft_acceptance_ratio": 0.0,
+      "draft_tokens_attempted": 0,
+      "acceptance_position_rates": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "tokens_per_cycle": 0.0,
+      "cycles": 0,
+      "adaptive_fallback_ar": false,
+      "adaptive_fallback_count": 0,
+      "prompt_cache_checkpoint_tokens": 0,
+      "prompt_cache_checkpoints": 0,
+      "prompt_cache_checkpoint_ms": 0.0,
+      "profile_totals_ms": {},
+      "prefill_chunk_profile_us": [],
+      "run_wall_ms": 19809.046749956906,
+      "mlx_memory_before": {
+        "active_gb": 8e-09,
+        "cache_gb": 1.0564e-05,
+        "peak_gb": 1.0572e-05
+      },
+      "mlx_memory_after": {
+        "active_gb": 17.512839028,
+        "cache_gb": 0.064634882,
+        "peak_gb": 18.516587148
+      },
+      "env": {
+        "DFLASH_VERIFY_VARIANT": "auto"
+      }
+    }
+  ]
+}

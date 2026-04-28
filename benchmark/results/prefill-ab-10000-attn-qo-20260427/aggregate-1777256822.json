@@ -1,0 +1,46 @@
+{
+  "model": "/Users/zereraz/models/Huihui-Qwen3.6-27B-abliterated-4.5bit-msq",
+  "draft": "/Users/zereraz/models/Qwen3.6-27B-DFlash",
+  "prompt_file": "/tmp/dflash-pi-large-prompt-20260427.txt",
+  "prompt_tokens": 10000,
+  "prefill_step_size": 2048,
+  "scenarios": "fastpath_b16",
+  "threshold": null,
+  "mlp_threshold": 128,
+  "gdn_threshold": 128,
+  "pairs": 1,
+  "order": [
+    "hybrid_gdn_qkv_z_out",
+    "hybrid_gdn_qkv_z_out_attn"
+  ],
+  "trials": [
+    {
+      "variant": "hybrid_gdn_qkv_z_out",
+      "pair": 1,
+      "prefill_ms": 44277.50416700001,
+      "wall_s": 47.47328354092315,
+      "output": "benchmark/results/prefill-ab-10000-attn-qo-20260427/hybrid_gdn_qkv_z_out-p10000-s2048-pair1.json"
+    },
+    {
+      "variant": "hybrid_gdn_qkv_z_out_attn",
+      "pair": 1,
+      "prefill_ms": 45062.308625,
+      "wall_s": 48.37929833307862,
+      "output": "benchmark/results/prefill-ab-10000-attn-qo-20260427/hybrid_gdn_qkv_z_out_attn-p10000-s2048-pair1.json"
+    }
+  ],
+  "summary": {
+    "hybrid_gdn_qkv_z_out": {
+      "count": 1.0,
+      "best_ms": 44277.50416700001,
+      "median_ms": 44277.50416700001,
+      "mean_ms": 44277.50416700001
+    },
+    "hybrid_gdn_qkv_z_out_attn": {
+      "count": 1.0,
+      "best_ms": 45062.308625,
+      "median_ms": 45062.308625,
+      "mean_ms": 45062.308625
+    }
+  }
+}
