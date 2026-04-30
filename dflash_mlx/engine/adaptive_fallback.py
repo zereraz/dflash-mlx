@@ -13,8 +13,7 @@ class AdaptiveFallbackConfig:
     min_tokens_per_cycle: float = 2.0
     probe_cycles: int = 8
     bad_probe_windows: int = 2
-    # Keep fallback in target-AR by default. Automatic reprobe changes verifier
-    # chunk shape, and near-tied greedy logits can drift across block sizes.
+    # Conservative hold after fallback.
     cooldown_tokens: int = 4096
     latency_margin: float = 1.0
     reprobe_block_tokens: Optional[int] = None
@@ -158,8 +157,7 @@ class AdaptiveFallbackState:
             self.bad_probe_windows_seen = 0
             return None
 
-        # Do not change decode policy on a single bad window; transient low
-        # acceptance can recover, and early fallback can drift sensitive output.
+        # Require sustained bad probe windows before changing policy.
         self.bad_probe_windows_seen += 1
         if self.bad_probe_windows_seen < max(1, int(self.config.bad_probe_windows)):
             return None
@@ -368,8 +366,6 @@ def resolve_adaptive_fallback_config(
         cooldown_tokens=_int_env(
             env,
             "DFLASH_ADAPTIVE_TARGET_AR_COOLDOWN",
-            # Long enough to avoid automatic smaller-block reprobe for normal
-            # single-request continuations unless explicitly configured lower.
             4096,
             min_value=1,
         ),
