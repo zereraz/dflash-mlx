@@ -483,6 +483,7 @@ def stream_dflash_generate_impl(
                 target_len=start,
                 acceptance_len=acceptance_len,
                 drafted_tokens=max(0, verify_token_count - 1),
+                force_replay=verify_token_count <= 1,
             )
             replay_ns_total += replay_cycle_ns
             cycles_completed += 1
@@ -504,9 +505,11 @@ def stream_dflash_generate_impl(
                     ).item()
                 )
             remaining_after_commit = max_new_tokens - len(generated_token_ids) - commit_count
+            observed_cycle_us = (time.perf_counter_ns() - cycle_start_ns) / 1_000.0
             adaptive_decision = adaptive_fallback.record_cycle(
                 block_len=block_len,
                 commit_count=commit_count,
+                cycle_us=observed_cycle_us,
                 can_continue=not stop_hit and remaining_after_commit > 0,
             )
             if adaptive_decision is not None:

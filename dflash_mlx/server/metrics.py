@@ -105,6 +105,24 @@ def log_bench_post(
         adaptive_last_probe_tokens_per_cycle=float(
             (summary_event or {}).get("adaptive_last_probe_tokens_per_cycle", 0.0) or 0.0
         ),
+        adaptive_bad_probe_windows=int(
+            (summary_event or {}).get("adaptive_bad_probe_windows", 0) or 0
+        ),
+        adaptive_pending_bad_probe_windows=int(
+            (summary_event or {}).get("adaptive_pending_bad_probe_windows", 0) or 0
+        ),
+        adaptive_last_probe_ms_per_token=(
+            (summary_event or {}).get("adaptive_last_probe_ms_per_token")
+        ),
+        adaptive_ar_ms_per_token=(
+            (summary_event or {}).get("adaptive_ar_ms_per_token")
+        ),
+        adaptive_latency_reject_count=int(
+            (summary_event or {}).get("adaptive_latency_reject_count", 0) or 0
+        ),
+        adaptive_latency_locked=bool(
+            (summary_event or {}).get("adaptive_latency_locked", False)
+        ),
         adaptive_fallback_reason=(summary_event or {}).get("adaptive_fallback_reason"),
         finish_reason=finish_reason,
         max_tokens=int(max_tokens),
